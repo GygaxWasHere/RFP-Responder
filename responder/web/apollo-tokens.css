@@ -1,0 +1,161 @@
+/* Apollo design system (Milestone XProtect) — tokens + base components for web UIs.
+ * Source: https://productexperience.milestonesys.com/ (captured 2026-10-04, see APOLLO-DESIGN-NOTES.md).
+ * Values marked [spec] are read straight off the Apollo pages; [inferred] are our best reading where
+ * the page did not state it explicitly — verify against reference-screens/ before relying on them.
+ *
+ * Default = dark theme (XProtect Smart Client look). Add data-theme="light" on <html> for light.
+ */
+
+:root {
+  /* ---- Neutral scale, H198 S15 (slight blue tint) [spec] ---- */
+  --N0:#000000; --N3:#070809; --N6:#0D1012; --N8:#111617; --N13:#1C2326; --N17:#252E32;
+  --N23:#323E43; --N28:#3D4C52; --N33:#485961; --N43:#5D747D; --N53:#758E99; --N70:#A7B7BE;
+  --N78:#BECACF; --N85:#D3DBDE; --N90:#E2E7E9; --N95:#F0F3F4; --N97:#F6F8F8; --N98:#FBFBFB; --N100:#FFFFFF;
+
+  /* ---- Primary scale, H198 S100 = Milestone Blue [spec] ---- */
+  --P10:#002433; --P13:#002F42; --P23:#005275; --P28:#00648F; --P33:#0076A8; --P43:#0099DA;
+  --P53:#0FB8FF; --P63:#42C7FF; --P72:#70D4FF; --P85:#B3E8FF; --P97:#F0FAFF;
+
+  /* ---- Accent scale, H54 S100 = Milestone Yellow [spec] ---- */
+  --A8:#292500; --A36:#B8A600; --A42:#D6C200; --A50:#FFE700; --A70:#FFF166; --A97:#FFFEF0;
+
+  /* ---- System scales [spec] ---- */
+  --D19:#5D0303; --D29:#8F0505; --D39:#C00707; --D49:#F10909; --D63:#F84949; --D69:#F96767; --D97:#FEF0F0;
+  --W29:#943400; --W39:#C74500; --W50:#FF5900; --W68:#FF955C; --W97:#FFF5F0;
+  --C17:#115502; --C25:#197C03; --C33:#22A604; --C45:#2EE005; --C92:#B9EAAE;
+  --destructive:var(--D49); --warning:var(--W50); --confirmation:var(--C33);
+
+  /* ---- Auxiliary (tag categories) [spec] ---- */
+  --AUD1:#897D00; --AUD2:#984900; --AUD3:#215938; --AUD4:#7D0000; --AUD5:#586D00; --AUD6:#006262;
+  --AUD7:#00378C; --AUD8:#402D78; --AUD9:#6E005D;
+  --AUL1:#FFF69E; --AUL2:#FFE4C5; --AUL3:#D9F1D4; --AUL4:#FFDCDC; --AUL5:#E7EEB8; --AUL6:#D0EDED;
+  --AUL7:#DBE9FF; --AUL8:#EAE7FF; --AUL9:#FFDCF9;
+
+  /* ---- Branding gradients (login / splash only) [spec]: 45deg, bottom-left start -> top-right end ---- */
+  --grad-dark:  linear-gradient(45deg, #002F42, #000000);
+  --grad-light: linear-gradient(45deg, #EBEFF2, #FFFFFF);
+  --grad-brand: linear-gradient(45deg, #0099DA, #0081C1);
+
+  /* ---- Semantic roles: DARK theme ---- */
+  --bg-app:      var(--N6);    /* window background */
+  --bg-pane:     var(--N8);    /* panes, inputs */
+  --bg-raised:   var(--N13);   /* toolbars, cards, table headers */
+  --bg-hover:    var(--N17);   /* selected nav item, hover rows */
+  --border:      var(--N23);
+  --border-ctrl: var(--N33);   /* input / dropdown outline */
+  /* Text = one base colour + opacity [spec]: dark high 100 %, low 60 %, disabled 35 % */
+  --text-high:   #FFFFFF;
+  --text-med:    rgba(255,255,255,.60);   /* "low emphasis" in Apollo terms */
+  --text-low:    rgba(255,255,255,.35);   /* disabled */
+  --primary:         var(--P43);  /* tab indicator, links, focus, progress */
+  --primary-hover:   var(--P53);
+  --primary-pressed: var(--P33);
+  --btn-primary-bg:  var(--P33);  /* white text is AA on P33, not on P43 */
+  --btn-primary-hover: var(--P28);
+  --titlebar-bg:     var(--P28);  /* "customised" title bar: P28 Electric + white diamond */
+
+  --radius: 2px;
+  --font: 'Open Sans', 'Segoe UI', sans-serif;   /* Segoe UI on native Windows, Open Sans on web */
+  --font-cjk: 'Noto Sans', 'Open Sans', sans-serif; /* JA/KO/ZH/AR/HE */
+  --shadow-pop: 0 4px 12px rgba(0,0,0,.35);      /* [inferred] dropdown/dialog/command-menu elevation */
+}
+
+[data-theme="light"] {
+  --bg-app:#F0F3F4; --bg-pane:#FFFFFF; --bg-raised:#F6F8F8; --bg-hover:#E2E7E9;
+  --border:#D3DBDE; --border-ctrl:#A7B7BE;
+  --text-high:rgba(7,8,9,.90); --text-med:rgba(7,8,9,.56); --text-low:rgba(7,8,9,.35); /* [spec] N3 + opacity */
+  --primary:var(--P33); --primary-hover:var(--P23); --primary-pressed:var(--P13);
+  --btn-primary-bg:var(--P33); --btn-primary-hover:var(--P23);
+  --titlebar-bg:var(--P28);
+  --shadow-pop:0 4px 12px rgba(8,25,39,.15);
+}
+
+/* ---- Typography scale [spec] (px / weight / line-height) ---- */
+.t-display     { font: 300 42px/50px var(--font); }
+.t-title       { font: 600 24px/32px var(--font); }
+.t-h1          { font: 600 18px/24px var(--font); }
+.t-h2          { font: 600 16px/20px var(--font); }
+.t-h3          { font: 600 11px/20px var(--font); text-transform: uppercase; letter-spacing: .04em; }
+.t-empty       { font: 300 16px/20px var(--font); color: var(--text-low); }
+.t-body-lg     { font: 400 16px/24px var(--font); }
+.t-body-md     { font: 400 14px/20px var(--font); }
+.t-inter-md    { font: 600 14px/20px var(--font); }
+.t-body-sm     { font: 400 12px/16px var(--font); }
+.t-inter-sm    { font: 600 12px/16px var(--font); }
+.t-label       { font: 400 11px/16px var(--font); color: var(--text-med); }
+.t-body-xs     { font: 400 10px/10px var(--font); }
+.t-inter-xs    { font: 600 10px/10px var(--font); }
+.t-inter-tiny  { font: 600 9px/11px var(--font); }
+
+/* ---- Buttons [spec]: L 40px/16px pad, M 32px/12px, S 24px/8px, XS 16px/4px; min width = 2 x height ---- */
+.btn { display:inline-flex; align-items:center; justify-content:center; gap:8px; height:32px; min-width:64px;
+       padding:0 12px; border:0; border-radius:var(--radius); font:600 14px/20px var(--font); cursor:pointer;
+       color:var(--text-high); background:transparent; white-space:nowrap; }
+.btn.lg { height:40px; min-width:80px; padding:0 16px; }
+.btn.sm { height:24px; min-width:48px; padding:0 8px; font-size:12px; }
+.btn.primary     { background:var(--btn-primary-bg); color:#fff; }          /* main action in a flow */
+.btn.primary:hover { background:var(--btn-primary-hover); }
+.btn.secondary   { box-shadow:inset 0 0 0 1px var(--primary); color:var(--primary-hover); } /* Cancel, Previous, Edit */
+.btn.tertiary    { background:var(--N23); }                                   /* Set, Browse, rarely used (Help) */
+[data-theme="light"] .btn.tertiary { background:var(--N90); }
+.btn.transparent { color:var(--text-high); }                                 /* toolbars */
+.btn.transparent:hover { background:var(--bg-hover); }
+.btn.accent      { background:var(--A50); color:var(--N3); }                 /* attract attention, sparingly */
+.btn:disabled    { opacity:.35; cursor:default; }
+.btn:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
+.textbtn { color:var(--primary-hover); font-weight:600; background:none; border:0; cursor:pointer; } /* in-line actions */
+a.hyperlink { color:var(--primary-hover); text-decoration:underline; }       /* navigation only, never with icons */
+
+/* ---- Tabs [spec]: selected = indicator + high-emphasis label; hover/pressed = primary colours; disabled 35% ---- */
+.tabs { display:flex; border-bottom:1px solid var(--border); }
+.tab  { display:flex; align-items:center; gap:8px; height:40px; padding:0 16px; color:var(--text-high);
+        font:600 14px/20px var(--font); border-bottom:2px solid transparent; cursor:pointer; }
+.tab:hover  { color:var(--primary-hover); }
+.tab.on     { border-bottom-color:var(--primary); }
+.tab:disabled, .tab.disabled { opacity:.35; }
+
+/* ---- Vertical navigation [spec]: icon + label, 3px left marker on the active item ---- */
+.vnav .item { display:flex; align-items:center; gap:12px; height:40px; padding:0 16px; border-left:3px solid transparent; }
+.vnav .item.on { background:var(--bg-hover); border-left-color:var(--primary); }
+
+/* ---- Input fields / dropdowns [spec]: L 40 / M 32 / S 24px high; 12px (8px small) side padding;
+        label above with 4px gap; optional character counter right-aligned on the label row ---- */
+.field label { display:block; font:400 11px/16px var(--font); color:var(--text-med); margin-bottom:4px; }
+.input { height:32px; width:100%; padding:0 12px; background:var(--bg-pane); color:var(--text-high);
+         border:1px solid var(--border-ctrl); border-radius:var(--radius); font:400 14px/20px var(--font); }
+.input.lg { height:40px; } .input.sm { height:24px; padding:0 8px; font-size:12px; }
+.input:focus { outline:none; border-color:var(--primary); }
+.input.error { border-color:var(--destructive); }
+
+/* ---- Toggle switch ---- */
+.toggle { width:40px; height:20px; border-radius:10px; background:var(--N43); position:relative; }
+.toggle.on { background:var(--primary); }
+.toggle::after { content:""; position:absolute; top:3px; left:3px; width:14px; height:14px; border-radius:50%; background:var(--N3); }
+.toggle.on::after { left:23px; }
+
+/* ---- Progress [spec]: bar/spinner = P43 on a P43 50% track ---- */
+.progress { height:4px; background:rgba(0,153,218,.5); }
+.progress > i { display:block; height:100%; background:var(--P43); }
+
+/* ---- Message bars [spec]: coloured left edge + icon + text (+ link/action/dismiss); non-blocking ---- */
+.msgbar { display:flex; align-items:center; gap:10px; padding:8px 12px; border-left:3px solid; }
+.msgbar.success { border-color:var(--confirmation); background:rgba(42,168,10,.10); }
+.msgbar.info    { border-color:var(--primary);      background:rgba(0,153,218,.10); }
+.msgbar.warning { border-color:var(--warning);      background:rgba(255,90,0,.10); }
+.msgbar.error   { border-color:var(--destructive);  background:rgba(224,0,0,.10); }
+
+/* ---- Tables [spec]: UPPERCASE small headers, sortable arrow, resizable columns (min 60px), tooltips on truncation ---- */
+table.apollo { width:100%; border-collapse:collapse; font:400 14px/20px var(--font); }
+table.apollo th { height:32px; padding:0 12px; text-align:left; font:600 11px/16px var(--font); text-transform:uppercase;
+                  color:var(--text-med); background:var(--bg-raised); border-bottom:1px solid var(--border); }
+table.apollo td { height:40px; padding:0 12px; border-bottom:1px solid var(--border); }
+table.apollo tr:hover td { background:var(--bg-hover); }
+table.apollo tr.selected td { background:rgba(0,153,218,.14); }
+
+/* ---- Tags: small pills, auxiliary colours for categories ---- */
+.tag { display:inline-flex; align-items:center; gap:4px; height:20px; padding:0 8px; border-radius:10px;
+       font:600 10px/10px var(--font); background:var(--N23); color:var(--N90); }
+
+/* ---- Application window title bar [spec]: 32px; customised = P28 + white diamond + "Milestone <Product>" ---- */
+.titlebar { height:32px; display:flex; align-items:center; gap:10px; padding-left:12px; background:var(--titlebar-bg);
+            color:#fff; font:400 12px/16px var(--font); }
