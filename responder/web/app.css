@@ -235,3 +235,5 @@ tr.detail td { background: var(--N8); padding: 16px 20px 20px; }
 .helpgrid article ul, .helpgrid article ol { padding-left: 20px; display: grid; gap: 4px; margin: 4px 0; }
 .helpgrid article p { margin: 6px 0; }
 .helpgrid article a { color: var(--primary-hover); }
+.detail-grid textarea[data-f=considerations] { min-height: 70px; }
+.modal.reader textarea[data-f=considerations] { min-height: 10vh; }

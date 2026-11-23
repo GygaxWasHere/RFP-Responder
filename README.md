@@ -87,6 +87,19 @@ For each batch of requirements (5 by default) the app does three things:
 2. It runs `claude -p` headless. The answer must follow a JSON schema. Claude gets only read-only tools: `Read`, `Grep` and `Glob` on your source folders (`--add-dir`), and `WebFetch` on the domains you allow. `--permission-mode dontAsk` denies anything else.
 3. It verifies the quotes and links, then sets the status.
 
+**Writing quality: one coherent document, not 300 isolated answers.**
+- **Tender brief.** Before answering, Claude reads all the requirements once and writes a tender brief: what the customer is buying, how the document is built, recurring themes, which facts to state only once and where (offered product and edition, architecture…), and which requirements ask about the same thing. It is written again when the requirements change. See **Tender brief** on the review page.
+- **What each batch gets.** The brief, the document outline, the related answers already given and the openings already used. The first batch runs alone, and each later batch sees every answer finished before it.
+- **The rules Claude follows.**
+  - Never restate the requirement. Start with the substance: what goes beyond the literal question, how it works, the limits.
+  - Name a product, module or licence only where it adds information. Never open with it.
+  - Refer to earlier answers ("see 4.2.1") instead of repeating them.
+  - Vary the openings.
+  - Write for the customer, never about the answer itself.
+- **Consider.** Each answer can carry a short note: what the project should take into account and why it matters for the result. In Excel/Word it follows the answer as "Consider: …" or goes into its own column, and you can switch it off in step 4.
+- **After answering.** Answers that still repeat the requirement, open like several others or open with the product name are flagged. Filter on **Style issues** and use **Answer checked again**.
+- **The product name in front** of an answer is only added in Excel when the answer relies on something other than the products chosen for the tender.
+
 **Word, Excel, PowerPoint and Outlook files.** Claude Code cannot read these formats directly. Before a run, each one in the allowed folders gets a readable text copy under `%LOCALAPPDATA%\RFPResponder\readable`, with the same relative path plus `.txt`. Claude can read and search those copies, and it cites the original file. Copies are only remade when the original changes.
 
 For traceability, the prompts and raw answers are kept in `%LOCALAPPDATA%\RFPResponder\runs\<project>\<timestamp>\`.

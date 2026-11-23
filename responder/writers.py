@@ -85,10 +85,10 @@ def write_excel(project, settings, author=""):
         else:
             put(o.get("compliance_col"), r, _label(scale, code) if o.get("use_label", True) else code,
                 _color(scale, code) or None)
-        expl = row.get("explanation", "")
-        if not o.get("product_col") and row.get("product"):
-            expl = f"Product: {row['product']}. {expl}"
+        expl = response_text(row, project, consider=not o.get("considerations_col"),
+                             with_product=not o.get("product_col"))
         put(o.get("explanation_col"), r, expl)
+        put(o.get("considerations_col"), r, row.get("considerations") if project.get("include_considerations", True) else "")
         put(o.get("product_col"), r, row.get("product"))
         put(o.get("links_col"), r, links_text(row))
         put(o.get("evidence_col"), r, evidence_text(row))
@@ -147,7 +147,23 @@ def _shade(cell, hex_color):
     tcPr.append(shd)
 
 
-def _row_values(row, scale):
+def response_text(row, project, consider=True, with_product=True):
+    """The answer as the customer reads it.
+    - The product is only named in front when the answer relies on something other than the products
+      chosen for the tender (otherwise every answer would start the same way).
+    - The considerations follow as their own short paragraph, unless they are turned off."""
+    expl = (row.get("explanation") or "").strip()
+    prod = (row.get("product") or "").strip()
+    offered = [p.strip().lower() for p in project.get("products") or []]
+    if with_product and prod and offered and prod.lower() not in offered:
+        expl = f"{prod}: {expl}"
+    cons = (row.get("considerations") or "").strip()
+    if consider and cons and project.get("include_considerations", True):
+        expl += f"\n\nConsider: {cons}"
+    return expl
+
+
+def _row_values(row, scale, project=None):
     return {
         "id": row.get("id", ""), "section": row.get("section", ""), "requirement": row.get("text", ""),
         "compliance": row.get("compliance", ""), "compliance_label": _label(scale, row.get("compliance", "")),
@@ -155,6 +171,8 @@ def _row_values(row, scale):
         "responsible": row.get("responsible", ""), "evidence": evidence_text(row), "links": links_text(row),
         "confidence": f"{row['confidence']}%" if row.get("confidence") is not None else "",
         "gaps": row.get("gaps", ""), "question": row.get("question", ""),
+        "considerations": row.get("considerations", ""),
+        "response": response_text(row, project or {}, with_product=False),
     }
 
 
@@ -164,7 +182,8 @@ def write_word(project, settings, author=""):
     Document placeholders: {{project}} {{customer}} {{date}} {{author}} {{products}} {{summary}}.
     Requirement table: put one table row with any of {{id}} {{section}} {{requirement}} {{compliance}}
     {{compliance_label}} {{explanation}} {{product}} {{responsible}} {{evidence}} {{links}}
-    {{confidence}} {{gaps}} {{question}}. That row is repeated for every answered requirement.
+    {{confidence}} {{gaps}} {{question}} {{considerations}}. That row is repeated for every answered
+    requirement. Without {{considerations}}, the considerations follow the explanation.
     Without such a row, a compliance table is added at the end of the document.
     """
     import docx
@@ -197,8 +216,11 @@ def write_word(project, settings, author=""):
     if tpl_row:
         t, tr = tpl_row
         anchor = tr._tr
+        own_place = "considerations" in "".join(c.text for c in tr.cells)
         for row in rows:
-            vals = _row_values(row, scale)
+            vals = _row_values(row, scale, project)
+            if not own_place:  # no {{considerations}} in the template: they follow the explanation
+                vals["explanation"] = vals["response"]
             new = copy.deepcopy(tr._tr)
             anchor.addnext(new)
             anchor = new
@@ -221,9 +243,9 @@ def write_word(project, settings, author=""):
         for i, c in enumerate(cols):
             t.rows[0].cells[i].text = c
         for row in rows:
-            v = _row_values(row, scale)
+            v = _row_values(row, scale, project)
             cells = t.add_row().cells
-            resp = v["explanation"] + (("\n" + v["links"]) if v["links"] else "")
+            resp = v["response"] + (("\n" + v["links"]) if v["links"] else "")
             for i, val in enumerate([v["id"], v["requirement"], v["compliance_label"], resp, v["product"]]):
                 cells[i].text = val
                 for p in cells[i].paragraphs:

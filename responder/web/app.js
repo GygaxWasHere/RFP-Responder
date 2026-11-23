@@ -409,8 +409,10 @@ VIEWS.output = () => {
         <div class="field"><label>Responsible</label>${colSelect("output.excel.owner_col", x.owner_col)}</div>
         <div class="field"><label>Confidence</label>${colSelect("output.excel.confidence_col", x.confidence_col)}</div>
         <div class="field"><label>Initials</label>${colSelect("output.excel.initials_col", x.initials_col)}</div>
+        <div class="field"><label>Considerations (own column)</label>${colSelect("output.excel.considerations_col", x.considerations_col)}</div>
       </div>
-      <div class="hint">No product column? The product is written at the start of the explanation. Review notes are added as cell comments on rows that are not approved.</div>
+      <div class="hint">No product column? The product is only named in front of an answer that relies on something other than the products chosen for the tender. Review notes are added as cell comments on rows that are not approved.</div>
+      ${toggle("Add the considerations to the answers", "“Consider: …” on what the project should take into account. Without its own column it follows the explanation as a short paragraph (also in Word).", `data-p="include_considerations" ${p.include_considerations !== false ? "checked" : ""}`)}
       ${toggle("Overwrite cells that already have content", "", `data-p="output.excel.overwrite" ${x.overwrite ? "checked" : ""}`)}
       <div class="field"><label>Save as</label><div class="inline"><input class="input" data-p="output.excel.out_path" value="${esc(x.out_path || "")}" placeholder="Automatic: <workbook>_Response_v1.xlsx next to the original"><button class="btn tertiary" data-act="saveAs" data-arg="excel">Browse…</button></div></div>
       </div>`)}
@@ -421,7 +423,7 @@ VIEWS.output = () => {
       <div class="field"><label>Save as</label><div class="inline"><input class="input" data-p="output.word.out_path" value="${esc(w.out_path || "")}" placeholder="Automatic: next to the template"><button class="btn tertiary" data-act="saveAs" data-arg="word">Browse…</button></div></div>
       <details><summary class="small" style="cursor:pointer;color:var(--primary-hover)">Placeholders you can put in the template</summary><div class="hint" style="margin-top:8px">
       Anywhere: <code>{{project}}</code> <code>{{customer}}</code> <code>{{date}}</code> <code>{{author}}</code> <code>{{products}}</code> <code>{{summary}}</code><br>
-      In one table row, repeated for every requirement: <code>{{id}}</code> <code>{{section}}</code> <code>{{requirement}}</code> <code>{{compliance_label}}</code> <code>{{explanation}}</code> <code>{{product}}</code> <code>{{responsible}}</code> <code>{{links}}</code> <code>{{evidence}}</code> <code>{{gaps}}</code> <code>{{question}}</code><br>
+      In one table row, repeated for every requirement: <code>{{id}}</code> <code>{{section}}</code> <code>{{requirement}}</code> <code>{{compliance_label}}</code> <code>{{explanation}}</code> <code>{{product}}</code> <code>{{responsible}}</code> <code>{{links}}</code> <code>{{evidence}}</code> <code>{{gaps}}</code> <code>{{question}}</code> <code>{{considerations}}</code><br>
       Without such a row, a compliance table is added at the end of the template.</div></details></div>`)}
     ${pane("Compliance levels", "checkmark-ok", `<div class="hint">Shared by all responses. Match them to the customer's scale if needed (e.g. Fully / Widely / Not yet / Not supported).</div>
       <table class="apollo"><thead><tr><th>Code</th><th>Label</th><th>Meaning for the responder</th><th>Colour</th><th></th></tr></thead><tbody>${scaleRows}</tbody></table>
@@ -449,6 +451,7 @@ function filtered() {
   if (f === "all") return rows;
   if (f === "selected") return rows.filter(r => r.selected);
   if (f === "unanswered") return rows.filter(r => !r.compliance);
+  if (f === "style") return rows.filter(r => (r.style_flags || []).length);
   if (f.startsWith("c:")) return rows.filter(r => r.compliance === f.slice(2));
   return rows.filter(r => r.status === f);
 }
@@ -458,7 +461,7 @@ VIEWS.respond = () => {
   const cnt = k => rows.filter(r => r.status === k).length;
   const sel = rows.filter(r => r.selected);
   const pending = sel.filter(r => !r.compliance).length;
-  const chips = [["all", `All ${rows.length}`], ["unanswered", `Unanswered ${rows.filter(r => !r.compliance).length}`], ["needs_review", `Needs review ${cnt("needs_review")}`], ["draft", `Draft ${cnt("draft")}`], ["approved", `Approved ${cnt("approved")}`]]
+  const chips = [["all", `All ${rows.length}`], ["unanswered", `Unanswered ${rows.filter(r => !r.compliance).length}`], ["needs_review", `Needs review ${cnt("needs_review")}`], ["draft", `Draft ${cnt("draft")}`], ["approved", `Approved ${cnt("approved")}`], ["style", `Style issues ${rows.filter(r => (r.style_flags || []).length).length}`]]
     .concat(scale().map(s => ["c:" + s.code, `${s.label} ${rows.filter(r => r.compliance === s.code).length}`]))
     .map(([k, l]) => `<button class="chip ${S.filter === k ? "on" : ""}" data-act="filter" data-arg="${k}">${l}</button>`).join("");
   const list = filtered();
@@ -482,6 +485,7 @@ VIEWS.respond = () => {
         <button class="btn secondary" data-act="run" data-arg="checked">Answer checked again</button>
         <select class="input" style="width:150px" data-s="model">${["opus", "sonnet", "haiku"].map(m => `<option ${S.settings.model === m ? "selected" : ""}>${m}</option>`).join("")}</select>
         <span class="grow"></span>
+        <button class="btn tertiary" data-act="showBrief" title="What Claude understood about the whole document before answering">Tender brief</button>
         <button class="btn tertiary" data-act="approveChecked">Approve checked</button>
         <button class="btn secondary" data-act="exportExcel" ${p.output.excel.enabled ? "" : "disabled"}><img src="${ICON("download")}" width="16" alt="">Write Excel</button>
         <button class="btn secondary" data-act="exportWord" ${p.output.word.enabled ? "" : "disabled"}><img src="${ICON("document")}" width="16" alt="">Write Word</button>
@@ -505,9 +509,11 @@ function detail(r) {
         <div class="field"><label>Product considered</label><input class="input" data-row="${esc(r.key)}" data-f="product" value="${esc(r.product || "")}"></div>
         <div class="field"><label>Responsible</label><input class="input" data-row="${esc(r.key)}" data-f="responsible" value="${esc(r.responsible || "")}"></div></div>
       <div class="field"><label>Response</label><textarea class="input" data-row="${esc(r.key)}" data-f="explanation">${esc(r.explanation || "")}</textarea></div>
+      <div class="field"><label>Consider (what the project should take into account, and why it matters)</label><textarea class="input" data-row="${esc(r.key)}" data-f="considerations">${esc(r.considerations || "")}</textarea></div>
       <div class="field"><label>Gaps / why not fully compliant</label><textarea class="input" data-row="${esc(r.key)}" data-f="gaps">${esc(r.gaps || "")}</textarea></div>
       <div class="field"><label>Question to the customer</label><textarea class="input" data-row="${esc(r.key)}" data-f="question">${esc(r.question || "")}</textarea></div>
       ${r.review_notes ? `<div class="msgbar warning"><span>${esc(r.review_notes)}</span></div>` : ""}
+      ${(r.style_flags || []).length ? `<div class="hint">Style: ${(r.style_flags || []).map(f => `<span class="tag y">${esc({ restates: "repeats the requirement", same_opening: "same opening as others", product_opening: "opens with the product name" }[f] || f)}</span>`).join(" ")} · tick the row and use <b>Answer checked again</b>, or edit the text.</div>` : ""}
       <div class="inline"><button class="btn primary" data-act="setStatus" data-arg="${esc(r.key)}|approved">Approve</button><button class="btn secondary" data-act="setStatus" data-arg="${esc(r.key)}|draft">Back to draft</button>
         <button class="btn tertiary" data-act="runOne" data-arg="${esc(r.key)}">Answer again</button>${S.reading ? "" : `<button class="btn tertiary" data-act="read" data-arg="${esc(r.key)}">Reading pane</button>`}<span class="grow"></span>${r.confidence != null ? `<span class="muted small">Confidence ${r.confidence}%</span>` : ""}</div>
     </div><div><div class="lbl" style="margin-bottom:6px">Evidence</div>${ev}${links ? `<div class="lbl" style="margin:12px 0 6px">Links for the customer</div>${links}` : ""}</div></div>`;
@@ -1036,6 +1042,18 @@ const ACT = {
     Object.entries(sug).forEach(([k, v]) => { if (v && (Array.isArray(v) ? v.length : String(v).trim())) pr[k] = v; });
     await saveProject(); render(); msg("Profile filled in from the requirements. Check it and correct what is wrong.", "success");
   },
+  showBrief: () => {
+    const b = S.project.brief;
+    modal("Tender brief", b && b.text ? `<div class="hint">Written ${esc(b.at || "")} by reading all ${S.project.rows.length} requirements. Every batch of answers gets this brief, the outline of the document and the related answers already given, so answers refer to each other instead of repeating. It is written again when the requirements change.</div>
+      <div class="mdview" style="white-space:pre-wrap">${esc(b.text)}</div>
+      <div class="inline" style="justify-content:flex-end"><button class="btn secondary" data-act="briefAgain">Write it again</button><button class="btn primary" data-act="closeModal">Close</button></div>`
+      : `<div class="hint">No brief yet. It is written automatically when you start answering: Claude reads all requirements once and notes what the tender is about, recurring themes and which facts to state only once.</div><div class="inline" style="justify-content:flex-end"><button class="btn primary" data-act="briefAgain">Write it now</button></div>`);
+  },
+  briefAgain: async () => {
+    ACT.closeModal();
+    const d = await safe(() => api("/api/project/brief", { id: S.project.id })); if (!d) return;
+    const j = await watchJob(d.job); await reloadProject(); if (j && j.status === "done") ACT.showBrief();
+  },
   cancelJob: id => safe(() => api("/api/job/cancel", { id })),
   toggleLog: () => $("#job .log")?.classList.toggle("hidden"),
 };
@@ -1091,7 +1109,8 @@ const HELP = [
     <h4>Excel</h4>
     <ul><li>Answers go into the customer's workbook, saved as a new file. The original is never changed.</li>
       <li>Compliance as <b>text in one column</b> (label or code), or as <b>a mark per level</b> (e.g. an X under Fully / Widely / Not supported).</li>
-      <li>Columns for the explanation, product, links, evidence, responsible, confidence and initials. Rows that are not approved get the review notes as cell comments.</li></ul>
+      <li>Columns for the explanation, product, links, evidence, responsible, confidence, initials and considerations. Rows that are not approved get the review notes as cell comments.</li>
+      <li>The product is only named in front of an answer when it differs from the products chosen for the tender. The <b>Consider</b> note follows the answer as a short paragraph, or goes into its own column. You can switch it off.</li></ul>
     <h4>Word</h4>
     <p>Fill a template with placeholders such as <code>{{project}}</code> and <code>{{customer}}</code>, and one table row with <code>{{id}}</code>, <code>{{requirement}}</code>, <code>{{compliance_label}}</code>, <code>{{explanation}}</code> and so on, repeated per requirement. A template without such a row gets a compliance table at the end.</p>
     <h4>Compliance levels</h4>
@@ -1101,6 +1120,7 @@ const HELP = [
       <li>Filter with the chips: unanswered, needs review, draft, approved, or a compliance level.</li>
       <li>Open a row with <b>&#9662;</b> to see the quotes (verified or not), the links, why it is not fully compliant, the question to the customer and the product considered.</li>
       <li><b>&#x2922; Reading pane</b>: one requirement at a time, full size, with large fields. <b>Alt+&#8592; / Alt+&#8594;</b> step through the current filter. Filter on "Partially compliant" and go through them one by one.</li>
+      <li><b>Writing quality.</b> Before answering, Claude reads the whole document once and writes a <b>tender brief</b> (button above the table): what the tender is about, recurring themes, and which facts to state only once. Every batch gets the brief, the outline and the related answers already given, so answers do not repeat the requirement or each other, refer to earlier answers (“see 4.2.1”), and do not all open with the product name. Each answer can carry a short <b>Consider</b> note: what the project should take into account and why it matters. Answers that still repeat the requirement or open like others are flagged. Filter on <b>Style issues</b>, tick them and use <b>Answer checked again</b>.</li>
       <li>Edit and <b>Approve</b>. Edits are saved while you type, and editing an approved answer sets it back to draft. The register records who approved each answer.</li>
       <li><b>Write Excel</b> / <b>Write Word</b> create the files. <b>Save approved to knowledge base</b> makes the answers precedents for the next tender.</li></ul>
     <h4>The evidence check</h4>
@@ -1311,6 +1331,7 @@ function summary(j) {
   const r = j.result || {};
   if ("answered" in r) return `${r.answered} answered, ${r.needs_review} need review${r.errors ? `, ${r.errors} failed batch(es)` : ""} · $${r.cost_usd}`;
   if ("markdown" in r) return `Report “${r.title}” saved for colleagues (${r.rows} requirements, ${r.tenders} tenders) · $${r.cost_usd}`;
+  if ("brief" in r) return `Tender brief written · $${r.cost_usd}`;
   if ("profile" in r) return `Profile suggested · $${r.cost_usd}`;
   if ("version" in r) return `${areaName(r.area)} published as version ${r.version}: ${fmtN(r.documents)} documents`;
   if ("removed" in r) return `${r.removed} documents removed`;

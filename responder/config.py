@@ -17,7 +17,7 @@ from . import osdep
 APP_NAME = "RFP Responder"
 APP_VERSION = "0.3.0"
 
-BASE_DIR = osdep.data_dir()  # Windows: %LOCALAPPDATA%\RFPResponder; macOS: ~/Library/Application Support/RFPResponder
+BASE_DIR = os.path.realpath(osdep.data_dir())  # Windows: %LOCALAPPDATA%\RFPResponder; macOS: ~/Library/Application Support/RFPResponder
 SETTINGS_FILE = os.path.join(BASE_DIR, "settings.json")
 PROJECTS_DIR = os.path.join(BASE_DIR, "projects")
 RUNS_DIR = os.path.join(BASE_DIR, "runs")
@@ -154,7 +154,8 @@ def new_project(name="New response"):
         "websites": [],         # [{"url":..., "max_pages": 200}]
         "use_kb": True,
         "owner": "",            # who started the response (for the register)
-        "register_share": True, # publish requirements + compliance to the shared register for reporting
+        "register_share": True,
+        "include_considerations": True,  # add "Consider: ..." to the answers in Excel/Word # publish requirements + compliance to the shared register for reporting
         "profile": {"vertical": "", "country": "", "region": "", "end_user_type": "", "consultant": "",
                     "partner": "", "purpose": "", "concerns": "", "themes": [], "due_date": "", "outcome": "Open"},
         "areas": None,          # knowledge areas to use (slugs); None = all
@@ -168,7 +169,7 @@ def new_project(name="New response"):
                       "mode": "text", "compliance_col": "", "marks": {}, "mark_char": "X",
                       "use_label": True, "explanation_col": "", "product_col": "",
                       "links_col": "", "evidence_col": "", "confidence_col": "",
-                      "owner_col": "", "initials_col": "", "out_path": ""},
+                      "owner_col": "", "initials_col": "", "considerations_col": "", "out_path": ""},
             "word": {"enabled": False, "template": "", "out_path": ""},
         },
         "rows": [],             # see reqs.py for the row shape

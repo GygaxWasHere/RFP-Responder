@@ -215,7 +215,7 @@ def api(method, path, q, body):
                 if r:
                     for f, v in ch.items():
                         if f in ("selected", "compliance", "explanation", "product", "responsible", "status",
-                                 "gaps", "question", "links", "topic", "gap_type", "security"):
+                                 "gaps", "question", "links", "topic", "gap_type", "security", "considerations"):
                             r[f] = v
                     if ch.get("status") == "approved":
                         r["approved_by"], r["approved_at"] = user, time.strftime("%Y-%m-%d %H:%M")
@@ -395,6 +395,16 @@ def api(method, path, q, body):
         publish_now(body["id"])
         reg().sync(force=True)
         return {"ok": True}
+    if path == "/api/project/brief":
+        p = get_project(body["id"])
+        p.pop("brief", None)
+
+        def write_brief(job=None):
+            from . import context
+            context.ensure_brief(p, s, job)
+            save_project(p)
+            return {"brief": True, "cost_usd": p["brief"].get("cost_usd", 0)}
+        return {"job": jobs.start("Reading the whole document", write_brief).id}
     if path == "/api/project/suggest-profile":
         p = get_project(body["id"])
         j = jobs.start("Reading the tender profile", reporting.suggest_profile, p, s)

@@ -14,10 +14,11 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 import urllib.parse
 
-from . import config, extract, osdep, readable, register
+from . import config, context, extract, osdep, readable, register
 
 SYSTEM_PROMPT = """You are a senior bid and compliance specialist. You write compliance responses to tender
 requirements on behalf of the bidder. The responses will be used in real tender submissions and can become
@@ -28,7 +29,7 @@ Rules:
    files you read in the allowed folders, or pages you fetch on the allowed domains.
 2. For each claim, copy a short exact quote (one or two sentences, word for word, no paraphrase, no
    ellipsis inside a sentence) from the source into `evidence`, with the source id ([S..] label without
-   brackets), the full file path, or the URL. Quotes are checked automatically against the source;
+   brackets), the full path of the FILE (not its folder), or the URL. Quotes are checked automatically against the source;
    invented or reworded quotes are rejected.
 3. Every factual sentence in `explanation` must be backed by your evidence. Do not speculate or add
    facts you have not seen ("may", "probably", "some components might"); put open points in `gaps`.
@@ -41,9 +42,10 @@ Rules:
    for wording and consistency, but they are not evidence on their own: confirm the facts in a source.
 6. Use the acknowledgement code for requirements that are not a product capability (installation,
    construction, project management, the customer's own processes). Say who is responsible.
-7. Name the product(s) you considered for each requirement in `product`, and say in the explanation
-   which product, module or licence delivers the function. Use only the products you are told to
-   consider, and respect the product rules.
+7. Name the product(s) you considered for each requirement in `product`. Use only the products you are
+   told to consider, and respect the product rules. In `explanation`, name a product, module, edition
+   or licence only where it adds information: when the function comes from a specific module, add-on,
+   licence or edition, or differs from the main offer. Do not open the explanation with the product name.
 8. Respect the bidder's role: if the bidder is the software vendor, do not commit to integrator or
    customer tasks; state them as their responsibility.
 9. Write plain, neutral, tender-safe language: short sentences, no marketing superlatives, no
@@ -56,7 +58,30 @@ Rules:
     `security_relevant` (true when it concerns cybersecurity, data protection, access control or secure
     development), `standards` (standards, certifications or regulations the requirement names, e.g.
     "ISO 27001", "IEC 62443-4-1", "NDAA", "GDPR"; empty if none) and, when the answer is not fully
-    compliant, `gap_type` (why: the closest of the listed gap types)."""
+    compliant, `gap_type` (why: the closest of the listed gap types).
+
+How to write `explanation` (the reviewer reads hundreds of these, the evaluator too):
+A. Never restate the requirement. The reader knows the question. "Yes, the software can record video
+   streams from cameras" tells them nothing. Start with the substance: how it works, the nuance, what
+   goes beyond the literal question, the limits. Example for "Does the VMS record video from cameras?":
+   "Recording covers more than video: audio and metadata from the cameras are stored with it, so the
+   recorded media can later be searched and analysed. Recording can run continuously, on motion or on
+   events, per camera." (each fact backed by evidence, as always).
+B. For a simple compliant requirement, a short answer is fine, but it must add something the reader did
+   not already know from the question.
+C. You answer one part of a whole document. Use the tender brief and the earlier answers you are given:
+   do not repeat what an earlier answer already explained; refer to it instead ("see 4.2.1") and add only
+   what is new for this requirement. State the overall product, edition and architecture once (where the
+   brief says), not in every answer.
+   Write for the customer: never describe the answer itself or your process ("This answer sets the
+   baseline", "as a placeholder", "the documentation could not be read"). Such notes for the bid team
+   belong in `gaps`.
+D. Vary the openings. Never start like the openings listed as already used, and never start two answers
+   in this batch the same way.
+E. `considerations`: one or two sentences, in perspective, on what the customer or project should
+   consider for this requirement and why it matters for the result (design, sizing, licensing, operation,
+   risk, dependency on other parties). It is advice, so it must not state product facts the evidence
+   does not back. Leave it empty when there is nothing useful to add; do not pad."""
 
 ROW_SCHEMA = {
     "type": "object",
@@ -65,6 +90,7 @@ ROW_SCHEMA = {
         "compliance": {"type": "string"},
         "product": {"type": "string"},
         "explanation": {"type": "string"},
+        "considerations": {"type": "string"},
         "responsible": {"type": "string"},
         "evidence": {"type": "array", "items": {
             "type": "object",
@@ -164,6 +190,12 @@ def run_claude(settings, prompt, folders, codes, run_dir, log=None):
         data = json.loads(out[out.index("{"):]) if out else {}
     except ValueError:
         data = {}
+    with open(os.path.join(run_dir, "claude_output.json"), "w", encoding="utf-8") as f:
+        json.dump(data or {"stdout": out[-4000:], "stderr": r.stderr[-4000:]}, f, ensure_ascii=False, indent=1)
+    denied = [d.get("tool_input", {}).get("file_path") or d.get("tool_input", {}).get("path") or d.get("tool_name")
+              for d in data.get("permission_denials") or []]
+    if denied and log:
+        log(f"Claude Code was refused access to: {', '.join(map(str, denied[:3]))}")
     if not data or data.get("is_error") or "structured_output" not in data:
         msg = data.get("result") or r.stderr.strip()[-800:] or out[-800:] or f"exit code {r.returncode}"
         raise RuntimeError(f"Claude Code did not return an answer: {msg}")
@@ -217,7 +249,7 @@ def claude_call(settings, prompt, run_dir, system, json_schema=None, read_dirs=(
 
 # ------------------------------------------------------------------ prompt
 
-def build_prompt(project, settings, batch, kb, sources, mirrors=None):
+def build_prompt(project, settings, batch, kb, sources, mirrors=None, brief=None):
     """sources: dict label -> {chunk dict} filled here."""
     scale = settings.get("scale") or config.DEFAULT_SCALE
     prods = {p["name"]: p.get("notes", "") for p in settings.get("products", [])}
@@ -252,9 +284,10 @@ def build_prompt(project, settings, batch, kb, sources, mirrors=None):
     folders = [f["path"] for f in project.get("folders", []) if f.get("path")]
     L.append("\n# Where you may look for more evidence (read only)")
     for f in project.get("folders", []):
-        L.append(f"- {f['path']}" + (f"  ({f['label']})" if f.get("label") else ""))
+        L.append(f"- {os.path.realpath(f['path'])}" + (f"  ({f['label']})" if f.get("label") else ""))
     if kb and project.get("use_kb", True) and hasattr(kb, "folders"):
         for f in kb.folders():
+            f = os.path.realpath(f)
             folders.append(f)
             L.append(f"- {f}  (knowledge area source)")
     if settings.get("allow_web_lookup") and settings.get("web_domains"):
@@ -268,6 +301,22 @@ def build_prompt(project, settings, batch, kb, sources, mirrors=None):
         for md, orig in mirrors.items():
             L.append(f"- {md}  = copies of {orig}")
         L.append("Read and grep the copies. In `evidence`, cite the ORIGINAL file path (without .txt).")
+
+    if brief:
+        L.append("\n# Tender brief (the whole document, read beforehand)")
+        L.append(brief)
+    if len(project.get("rows", [])) > len(batch):
+        L.append(f"\n# Document outline ({len(project['rows'])} requirements; you answer {len(batch)} of them now)")
+        L.append(context.outline_text(project))
+    dg = context.digest(project, batch)
+    if dg:
+        L.append("\n# Already answered in this document (do not repeat these; refer to them by id and add only "
+                 "what is new)")
+        L.append(dg)
+    ops = context.used_openings(project, batch)
+    if ops:
+        L.append("\n# Openings already used by other answers (do not start the same way)")
+        L.append(", ".join(ops))
 
     L.append("\n# Requirements to answer")
     for row in batch:
@@ -312,7 +361,8 @@ class Verifier:
         self.kb, self.settings, self.sources = kb, settings, sources
         self.mirrors = mirrors or {}
         folders = list(folders) + list(self.mirrors)
-        self.folders = [os.path.normcase(os.path.abspath(f)) for f in folders]
+        self.roots = [os.path.realpath(f) for f in folders]
+        self.folders = [os.path.normcase(f) for f in self.roots]
         self.cache = {}
         self.link_cache = {}
 
@@ -332,11 +382,32 @@ class Verifier:
             if txt is None and self._domain_ok(s):
                 txt = self._fetch(s)
         else:
-            path = os.path.normcase(os.path.abspath(s))
-            if any(path.startswith(f) for f in self.folders) and os.path.isfile(s):
+            s = self._resolve(s) or s
+            path = os.path.normcase(os.path.realpath(s))
+            if any(path == f or path.startswith(f + os.sep) for f in self.folders) and os.path.isfile(s):
                 txt = (self.kb.doc_text(s) if self.kb else None) or "\n".join(t for _, t in extract.extract(s))
         self.cache[src] = _norm(txt) if txt else None
         return self.cache[src]
+
+    def _resolve(self, s):
+        """A file cited by name or relative path ("recording.txt", "manuals/x.pdf"): find it in the allowed
+        folders. Only an unambiguous match counts."""
+        if not s or os.path.isabs(s):
+            return None
+        rel = s.replace("/", os.sep).replace("\\", os.sep)
+        hits = [os.path.join(f, rel) for f in self.roots if os.path.isfile(os.path.join(f, rel))]
+        if not hits and os.sep not in rel:
+            name = rel.lower()
+            for f in self.roots:
+                for root, _dirs, files in os.walk(f):
+                    hits += [os.path.join(root, x) for x in files if x.lower() == name]
+                    if len(hits) > 1:
+                        return None
+        return hits[0] if len(hits) == 1 else None
+
+    def source_path(self, src):
+        """The full path for a file cited by name, so the reviewer can open it."""
+        return self._resolve(src.strip().strip("[]")) or src
 
     def _domain_ok(self, url):
         host = urllib.parse.urlsplit(url).netloc.lower()
@@ -357,14 +428,45 @@ class Verifier:
             return None
 
     def check_quote(self, ev):
-        text = self._text_for(ev.get("source", ""))
         q = _norm(ev.get("quote"))
-        if not text or len(q) < 12:
+        if len(q) < 12:
+            return False
+        src = ev.get("source", "").strip().strip("[]")
+        folder = self._allowed_dir(src)
+        if folder:  # a folder was cited instead of a file: find the file that holds the quote
+            for path in self._files(folder):
+                if self._contains(self._text_for(path), q):
+                    ev["source"] = path
+                    return True
+            return False
+        return self._contains(self._text_for(ev.get("source", "")), q)
+
+    @staticmethod
+    def _contains(text, q):
+        if not text:
             return False
         if q in text:
             return True
         parts = [p.strip() for p in re.split(r"\.\.\.|…", q) if len(p.strip()) >= 12]
         return bool(parts) and all(p in text for p in parts)
+
+    def _allowed_dir(self, s):
+        if not s or "://" in s or not os.path.isabs(s) or not os.path.isdir(s):
+            return None
+        p = os.path.normcase(os.path.realpath(s))
+        return s if any(p == f or p.startswith(f + os.sep) for f in self.folders) else None
+
+    @staticmethod
+    def _files(folder, limit=400):
+        n = 0
+        for root, dirs, names in os.walk(folder):
+            dirs[:] = [d for d in dirs if not d.startswith((".", "~", "__"))]
+            for x in names:
+                if extract.supported(x):
+                    yield os.path.join(root, x)
+                    n += 1
+                    if n >= limit:
+                        return
 
     def check_link(self, url):
         if url in self.link_cache:
@@ -390,7 +492,10 @@ class Verifier:
         if s in self.sources:
             h = self.sources[s]
             return h["location"], " - ".join(x for x in (h.get("title"), h.get("heading")) if x)
-        return readable.to_original(src, self.mirrors) if self.mirrors and not s.startswith(("http", "mssql")) else src, ""
+        if s.startswith(("http", "mssql")):
+            return src, ""
+        full = self.source_path(s)
+        return (readable.to_original(full, self.mirrors) if self.mirrors else full), ""
 
 
 def apply_answer(row, ans, verifier, scale, strict):
@@ -402,15 +507,16 @@ def apply_answer(row, ans, verifier, scale, strict):
     row["confidence"] = ans.get("confidence")
     row["gaps"] = ans.get("gaps", "") or ""
     row["question"] = ans.get("question", "") or ""
+    row["considerations"] = (ans.get("considerations") or "").strip()
     row["topic"] = ans.get("topic") or ""
     row["security"] = ans.get("security_relevant")
     row["standards"] = [s for s in (ans.get("standards") or []) if isinstance(s, str) and s.strip()][:10]
     row["gap_type"] = ans.get("gap_type") or ""
     evs = []
     for ev in ans.get("evidence") or []:
+        ok = verifier.check_quote(ev)  # first: it may replace a cited folder with the file that holds the quote
         loc, where = verifier.describe(ev.get("source", ""))
-        evs.append({"source": loc, "where": ev.get("where") or where, "quote": ev.get("quote", ""),
-                    "verified": verifier.check_quote(ev)})
+        evs.append({"source": loc, "where": ev.get("where") or where, "quote": ev.get("quote", ""), "verified": ok})
     row["evidence"] = evs
     links = []
     for ln in ans.get("links") or []:
@@ -448,9 +554,9 @@ def respond(project, settings, kb, keys=None, job=None, on_batch=None):
     rows = [r for r in project["rows"] if (keys is None and r.get("selected")) or (keys and r["key"] in keys)]
     if not rows:
         raise ValueError("No requirements selected")
-    folders = [f["path"] for f in project.get("folders", []) if f.get("path")]
+    folders = [os.path.realpath(f["path"]) for f in project.get("folders", []) if f.get("path")]
     if kb and project.get("use_kb", True) and hasattr(kb, "folders"):
-        folders += [f for f in kb.folders() if f not in folders]
+        folders += [os.path.realpath(f) for f in kb.folders() if os.path.realpath(f) not in folders]
     bs = max(1, int(settings.get("batch_size", 5)))
     batches = [rows[i:i + bs] for i in range(0, len(rows), bs)]
     run_dir = os.path.join(config.RUNS_DIR, project["id"], time.strftime("%Y%m%d-%H%M%S"))
@@ -464,12 +570,20 @@ def respond(project, settings, kb, keys=None, job=None, on_batch=None):
         job.update(message="Preparing readable copies of Word/Excel files")
     mirrors = readable.prepare(folders, kb, job)
     claude_dirs = folders + list(mirrors)
+    brief = None
+    if settings.get("tender_brief", True) and len(project.get("rows", [])) > 1:
+        try:
+            brief = context.ensure_brief(project, settings, job)
+            if on_batch:
+                on_batch(project)
+        except Exception as e:  # noqa: BLE001 - answering still works without the brief
+            log(f"No tender brief ({e}); answering without it")
 
     def work(i, batch):
         if job and job.cancelled:
             return i, batch, None, {}, 0
         sources = {}
-        prompt = build_prompt(project, settings, batch, kb, sources, mirrors)
+        prompt = build_prompt(project, settings, batch, kb, sources, mirrors, brief)
         bdir = os.path.join(run_dir, f"batch{i + 1:03d}")
         os.makedirs(bdir, exist_ok=True)
         with open(os.path.join(bdir, "prompt.md"), "w", encoding="utf-8") as f:
@@ -477,33 +591,49 @@ def respond(project, settings, kb, keys=None, job=None, on_batch=None):
         answers, cost = run_claude(settings, prompt, claude_dirs, codes, bdir, log)
         with open(os.path.join(bdir, "answers.json"), "w", encoding="utf-8") as f:
             json.dump(answers, f, ensure_ascii=False, indent=1)
-        return i, batch, answers, sources, cost
-
-    with cf.ThreadPoolExecutor(max_workers=max(1, int(settings.get("parallel", 2)))) as ex:
-        futs = [ex.submit(work, i, b) for i, b in enumerate(batches)]
-        for fut in cf.as_completed(futs):
-            try:
-                i, batch, answers, sources, cost = fut.result()
-            except Exception as e:  # noqa: BLE001
-                errors += 1
-                log(f"A batch failed: {e}")
-                continue
-            if answers is None:
-                continue
-            total_cost += cost or 0
-            ver = Verifier(kb, settings, folders, sources, mirrors)
-            by_key = {a.get("key"): a for a in answers}
+        # apply right away, so the next batch this worker picks up already sees these answers
+        ver = Verifier(kb, settings, folders, sources, mirrors)
+        by_key = {a.get("key"): a for a in answers}
+        with apply_lock:
             for row in batch:
                 a = by_key.get(row["key"])
                 if a:
                     apply_answer(row, a, ver, scale, settings.get("strict_evidence", True))
+                    flags = context.style_check(row, project)
+                    if flags:
+                        note = " ".join(context.STYLE_NOTES[f] for f in flags)
+                        row["review_notes"] = (row.get("review_notes", "") + " Style: " + note).strip()
                 else:
                     log(f"No answer returned for {row['id']}")
-            done += len(batch)
-            if job:
-                job.update(progress=done / len(rows), message=f"{done}/{len(rows)} answered")
-            if on_batch:
-                on_batch(project)
+        return i, batch, answers, sources, cost
+
+    apply_lock = threading.Lock()
+
+    def finished(fut):
+        nonlocal total_cost, done, errors
+        try:
+            _i, batch, answers, _sources, cost = fut.result()
+        except Exception as e:  # noqa: BLE001
+            errors += 1
+            log(f"A batch failed: {e}")
+            return
+        if answers is None:
+            return
+        total_cost += cost or 0
+        done += len(batch)
+        if job:
+            job.update(progress=done / len(rows), message=f"{done}/{len(rows)} answered")
+        if on_batch:
+            on_batch(project)
+
+    with cf.ThreadPoolExecutor(max_workers=max(1, int(settings.get("parallel", 2)))) as ex:
+        # the first batch alone, so the others start from its answers (tone, what has been said)
+        first = ex.submit(work, 0, batches[0])
+        cf.wait([first])
+        finished(first)
+        futs = [ex.submit(work, i, b) for i, b in enumerate(batches) if i > 0]
+        for fut in cf.as_completed(futs):
+            finished(fut)
     project.setdefault("runs", []).append({"at": time.strftime("%Y-%m-%d %H:%M"), "rows": len(rows),
                                            "cost_usd": round(total_cost, 2), "model": settings.get("model"),
                                            "errors": errors, "dir": run_dir})
