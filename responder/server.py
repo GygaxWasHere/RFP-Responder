@@ -11,8 +11,9 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import config, engine, ingest, jobs, reqs, writers
+from . import config, engine, ingest, jobs, osdep, register, reporting, reqs, sqlsrc, writers
 from .kb import KB
+from .library import Library, Scope, clean_sql_source
 
 WEB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 TOKEN = secrets.token_urlsafe(24)
@@ -20,16 +21,29 @@ LAST_PING = [time.time()]
 
 _projects = {}           # id -> project dict kept in memory while the app runs
 _plock = threading.RLock()
-_kb = {"path": None, "kb": None}
+_lib = {"key": None, "lib": None}
 _dialog_lock = threading.Lock()
 
 
-def kb():
-    path = config.load_settings()["db_path"]
-    if _kb["path"] != path:
-        _kb["kb"] = KB(path)
-        _kb["path"] = path
-    return _kb["kb"]
+def lib():
+    s = config.load_settings()
+    key = (os.path.normcase(s["kb_root"]), s.get("user_name", ""))
+    if _lib["key"] != key:
+        _lib["lib"] = Library(s["kb_root"], s.get("user_name", ""))
+        _lib["key"] = key
+    return _lib["lib"]
+
+
+def project_kb(pid, create=False):
+    path = config.project_db_path(pid)
+    return KB(path) if create or os.path.exists(path) else None
+
+
+def scope(p):
+    lb = lib()
+    slugs = lb.area_slugs() if p.get("areas") is None else [x for x in p["areas"] if x in lb.area_slugs()]
+    names = {a: lb.manifest(a)["name"] for a in slugs}
+    return Scope(lb, slugs if p.get("use_kb", True) else [], project_kb(p["id"]), names)
 
 
 def get_project(pid):
@@ -43,34 +57,55 @@ def save_project(p):
     with _plock:
         _projects[p["id"]] = p
         config.save_project(p)
+        _dirty.add(p["id"])
+
+
+# ------------------------------------------------------------------ requirements register
+_dirty = set()           # responses changed since they were last published to the register
+_reg = {"key": None, "reg": None}
+
+
+def reg():
+    lb = lib()
+    if _reg["key"] != lb.root:
+        _reg["reg"] = register.Register(lb.root, lb.cache_dir)
+        _reg["key"] = lb.root
+    return _reg["reg"]
+
+
+def publish_now(pid):
+    _dirty.discard(pid)
+    p = get_project(pid)
+    return register.publish(p, lib().root, config.load_settings().get("scale") or config.DEFAULT_SCALE)
+
+
+def _publisher():
+    """Publish changed responses about once a minute (not on every keystroke, and not on SharePoint
+    for every autosave)."""
+    while True:
+        time.sleep(60)
+        for pid in list(_dirty):
+            try:
+                publish_now(pid)
+            except Exception:  # noqa: BLE001 - the shared folder may be offline; try again next round
+                _dirty.add(pid)
+
+
+threading.Thread(target=_publisher, daemon=True).start()
 
 
 # ------------------------------------------------------------------ native dialogs
 
+def _migrate(lb, path, assign, answers, job=None):
+    r = lb.migrate(path, assign, answers, job)
+    if not (job and job.cancelled):
+        config.save_settings({"legacy_imported": True})
+    return r
+
+
 def browse(kind, title="", filetypes=None, initial=""):
-    import tkinter as tk
-    from tkinter import filedialog
     with _dialog_lock:
-        root = tk.Tk()
-        root.withdraw()
-        root.attributes("-topmost", True)
-        try:
-            opts = {"title": title or "Select", "parent": root}
-            if initial and os.path.isdir(initial):
-                opts["initialdir"] = initial
-            if kind == "folder":
-                r = filedialog.askdirectory(**opts)
-            elif kind == "save":
-                r = filedialog.asksaveasfilename(filetypes=filetypes or [("All files", "*.*")], **opts)
-            elif kind == "files":
-                r = list(filedialog.askopenfilenames(filetypes=filetypes or [("All files", "*.*")], **opts))
-            else:
-                r = filedialog.askopenfilename(filetypes=filetypes or [("All files", "*.*")], **opts)
-        finally:
-            root.destroy()
-    if isinstance(r, list):
-        return [os.path.normpath(x) for x in r]
-    return os.path.normpath(r) if r else ""
+        return osdep.pick(kind, title, filetypes, initial)
 
 
 FILETYPES = {
@@ -91,13 +126,19 @@ def api(method, path, q, body):
     if path == "/api/ping":
         LAST_PING[0] = time.time()
         return {"ok": True}
+    if path == "/api/view":  # where the user was, so the app reopens there after a restart
+        LAST_PING[0] = time.time()
+        config.save_view({k: body.get(k) for k in ("project", "tab", "open")})
+        return {"ok": True}
     if path == "/api/state":
         try:
-            st = kb().stats()
+            st = lib().summary()
         except Exception as e:  # noqa: BLE001
-            st = {"path": s["db_path"], "error": str(e)}
+            st = {"root": s["kb_root"], "error": str(e)}
         return {"settings": s, "projects": config.list_projects(), "kb": st, "version": config.APP_VERSION,
-                "jobs": jobs.active()}
+                "jobs": jobs.active(), "view": config.load_view(), "data_dir": config.BASE_DIR,
+                "platform": "mac" if osdep.IS_MAC else ("windows" if osdep.IS_WIN else "linux"),
+                "libraries": [{"name": n, "path": p_} for n, p_ in sorted(osdep.sync_libraries())]}
     if path == "/api/settings" and method == "POST":
         return {"settings": config.save_settings(body)}
     if path == "/api/claude/test":
@@ -108,13 +149,14 @@ def api(method, path, q, body):
     if path == "/api/open":
         p = body.get("path", "")
         if p and os.path.exists(p):
-            os.startfile(p)  # noqa: S606 - opens the user's own output file/folder
+            osdep.open_path(p)
             return {"ok": True}
         return {"ok": False, "error": "File not found"}
 
     # projects
     if path == "/api/project/new":
         p = config.new_project(body.get("name") or "New response")
+        p["owner"] = user
         save_project(p)
         return {"project": p}
     if path == "/api/project/get":
@@ -130,7 +172,12 @@ def api(method, path, q, body):
     if path == "/api/project/delete":
         with _plock:
             _projects.pop(body["id"], None)
+            _dirty.discard(body["id"])
             config.delete_project(body["id"])
+        try:
+            register.unpublish(body["id"], lib().root)
+        except OSError:
+            pass
         return {"ok": True}
 
     # requirements
@@ -139,7 +186,7 @@ def api(method, path, q, body):
         if k == "excel":
             return {"kind": k, "sheets": reqs.excel_preview(body["path"])}
         if k == "word":
-            return {"kind": k, "sheets": []}
+            return {"kind": k, "sheets": [], "outline": reqs.word_outline(body["path"], body.get("mode") or "lists")}
         raise ValueError("Pick an .xlsx, .xlsm or .docx file")
     if path == "/api/req/load":
         with _plock:
@@ -168,8 +215,13 @@ def api(method, path, q, body):
                 if r:
                     for f, v in ch.items():
                         if f in ("selected", "compliance", "explanation", "product", "responsible", "status",
-                                 "gaps", "question", "links"):
+                                 "gaps", "question", "links", "topic", "gap_type", "security"):
                             r[f] = v
+                    if ch.get("status") == "approved":
+                        r["approved_by"], r["approved_at"] = user, time.strftime("%Y-%m-%d %H:%M")
+                    elif "status" in ch:
+                        r.pop("approved_by", None)
+                        r.pop("approved_at", None)
             save_project(p)
         return {"project": p}
 
@@ -177,7 +229,7 @@ def api(method, path, q, body):
     if path == "/api/run":
         p = get_project(body["id"])
         keys = body.get("keys") or None
-        j = jobs.start("Answering requirements", engine.respond, p, s, kb(), keys, on_batch=save_project)
+        j = jobs.start("Answering requirements", engine.respond, p, s, scope(p), keys, on_batch=save_project)
         return {"job": j.id}
 
     # export
@@ -189,42 +241,164 @@ def api(method, path, q, body):
         return writers.write_word(p, s, user)
     if path == "/api/kb/save-responses":
         p = get_project(body["id"])
-        k = kb()
+        lb = lib()
         n = 0
         for r in p["rows"]:
             if r.get("compliance") and (r.get("status") == "approved" or not body.get("approved_only", True)):
-                k.save_response(p.get("name"), p.get("customer"), r,
-                                "approved" if r.get("status") == "approved" else "draft", user)
+                lb.save_answer(p, r, "approved" if r.get("status") == "approved" else "draft")
                 n += 1
         return {"saved": n}
 
-    # knowledge base
-    if path == "/api/kb/ingest":
+    # knowledge areas (shared)
+    if path == "/api/kb/areas":
+        lb = lib()
+        legacy = None
+        if not s.get("legacy_imported") and os.path.isfile(s.get("db_path") or ""):
+            legacy = lb.legacy_info(s["db_path"])
+        return {"areas": lb.areas(), "root": lb.root, "legacy": legacy, "answers": lb.answers_index_count()}
+    if path == "/api/kb/area/create":
+        name = (body.get("name") or "").strip()
+        if not name:
+            raise ValueError("Give the area a name")
+        return {"area": lib().create_area(name, body.get("description", ""))}
+    if path == "/api/kb/area/describe":
+        lb = lib()
+        m = lb.manifest(body["slug"])
+        m.update({k: str(body[k]).strip() for k in ("name", "description") if k in body})
+        lb._save_manifest(m)
+        return {"area": m}
+    if path == "/api/kb/area/add-source":
+        if body["source"].get("type") == "sql" and body.get("password"):
+            sqlsrc.save_password(clean_sql_source(body["source"]), body["password"])
+        return {"area": lib().add_source(body["slug"], body["source"])}
+    if path == "/api/kb/area/set-source":
+        ch = body.get("changes", {})
+        if ch.get("type") == "sql" and body.get("password"):
+            sqlsrc.save_password(clean_sql_source(ch), body["password"])
+        return {"area": lib().set_source(body["slug"], body["index"], ch)}
+    if path == "/api/kb/sql/test":
+        src = clean_sql_source(body["source"])
+        pw = body.get("password") or None
+        out = {"preview": sqlsrc.preview(src, pw)}
+        try:
+            out["tables"] = sqlsrc.list_tables(src, pw)
+        except Exception:  # noqa: BLE001 - the list is a convenience; the query worked
+            out["tables"] = []
+        if pw and src["auth"] == "sql":
+            sqlsrc.save_password(src, pw)
+        return out
+    if path == "/api/kb/sql/tables":
+        src = clean_sql_source({**body["source"], "name": body["source"].get("name") or "tables",
+                                "query": body["source"].get("query") or "SELECT 1 AS x"})
+        return {"tables": sqlsrc.list_tables(src, body.get("password") or None)}
+    if path == "/api/kb/sql/password":
+        sqlsrc.save_password(clean_sql_source(body["source"]), body["password"])
+        return {"ok": True}
+    if path == "/api/kb/area/remove-source":
+        lb = lib()
+        m = lb.manifest(body["slug"])
+        if not os.path.exists(lb._p(body["slug"], ".db")):  # nothing published yet: just edit the list
+            with lb._area_lock(body["slug"], "editing"):
+                m["sources"].pop(int(body["index"]))
+                lb._save_manifest(m)
+            return {"area": m}
+        j = jobs.start(f"Removing a source from {m['name']}", lb.remove_source, body["slug"], body["index"])
+        return {"job": j.id}
+    if path == "/api/kb/area/update":
+        lb = lib()
+        m = lb.manifest(body["slug"])
+        full = bool(body.get("full"))
+        j = jobs.start(f"{'Rebuilding' if full else 'Updating'} {m['name']}", lb.update_area, body["slug"], full)
+        return {"job": j.id}
+    if path == "/api/kb/area/rollback":
+        return {"area": lib().rollback(body["slug"])}
+    if path == "/api/kb/area/unlock":
+        lib().break_lock(body["slug"])
+        return {"ok": True}
+    if path == "/api/kb/area/docs":
+        return {"docs": lib().documents(body["slug"], body.get("q", ""))}
+    if path == "/api/kb/area/remove-docs":
+        lb = lib()
+        j = jobs.start(f"Removing documents from {lb.manifest(body['slug'])['name']}", lb.remove_documents,
+                       body["slug"], body["locations"])
+        return {"job": j.id}
+    if path == "/api/kb/search":
+        lb = lib()
+        slugs = body.get("areas")
+        return {"hits": lb.search(body.get("q", ""), 12, slugs),
+                "precedents": lb.precedents(body.get("q", ""), limit=5, approved_only=False, slugs=slugs)}
+    if path == "/api/kb/responses":
+        return {"responses": lib().list_answers(body.get("q", ""))}
+    if path == "/api/kb/delete-response":
+        lib().delete_answer(body["fp"])
+        return {"ok": True}
+    if path == "/api/kb/migrate":
+        lb = lib()
+        j = jobs.start("Importing the old knowledge base", _migrate, lb, s["db_path"], body.get("assign", {}),
+                       bool(body.get("answers", True)))
+        return {"job": j.id}
+    if path == "/api/kb/legacy-dismiss":
+        config.save_settings({"legacy_imported": True})
+        return {"ok": True}
+
+    # the response's own sources (local to this PC)
+    if path == "/api/project/ingest":
         folder = body["path"]
         if not os.path.isdir(folder):
             raise ValueError("Folder not found")
-        j = jobs.start(f"Indexing {os.path.basename(folder)}", ingest.ingest_folder, kb(), folder,
-                       body.get("collection") or folder, user)
+        j = jobs.start(f"Indexing {os.path.basename(folder)}", ingest.ingest_folder, project_kb(body["id"], True),
+                       folder, folder, user)
         return {"job": j.id}
-    if path == "/api/kb/crawl":
+    if path == "/api/project/crawl":
         url = body["url"].strip()
         if not url.startswith(("http://", "https://")):
             raise ValueError("Enter a full web address starting with https://")
-        j = jobs.start(f"Reading {urllib.parse.urlsplit(url).netloc}", ingest.crawl_site, kb(), url,
-                       int(body.get("max_pages", 200)), body.get("prefix") or None, 0.5, user)
+        j = jobs.start(f"Reading {urllib.parse.urlsplit(url).netloc}", ingest.crawl_site, project_kb(body["id"], True),
+                       url, int(body.get("max_pages", 200)), None, 0.5, user)
         return {"job": j.id}
-    if path == "/api/kb/collections":
-        return {"collections": kb().collections(), "stats": kb().stats()}
-    if path == "/api/kb/delete-collection":
-        return {"removed": kb().delete_collection(body["collection"])}
-    if path == "/api/kb/search":
-        return {"hits": kb().search(body.get("q", ""), limit=12),
-                "precedents": kb().precedents(body.get("q", ""), limit=5, approved_only=False)}
-    if path == "/api/kb/responses":
-        return {"responses": kb().list_responses(body.get("q", ""))}
-    if path == "/api/kb/delete-response":
-        kb().delete_response(int(body["rid"]))
+    if path == "/api/project/collections":
+        k = project_kb(body["id"])
+        return {"collections": k.collections() if k else []}
+
+    # reporting
+    scale = s.get("scale") or config.DEFAULT_SCALE
+
+    def rfilters():
+        pre = reporting.PRESETS.get(body.get("preset") or "all", reporting.PRESETS["all"])
+        return {**pre["filters"], **{k: v for k, v in (body.get("filters") or {}).items() if v not in (None, "")}}
+
+    if path == "/api/report/meta":
+        return {"presets": {k: {kk: v[kk] for kk in ("label", "description", "filters")} for k, v in reporting.PRESETS.items()},
+                "options": reg().options(), "topics": register.TOPICS, "gap_types": register.GAP_TYPES,
+                "verticals": register.VERTICALS, "regions": register.REGIONS, "outcomes": register.OUTCOMES,
+                "reports": reporting.list_reports(lib().root)}
+    if path == "/api/report/summary":
+        reg().sync(force=bool(body.get("refresh")))
+        return reg().summary(rfilters(), scale)
+    if path == "/api/report/rows":
+        return {"rows": reg().rows(rfilters(), scale, limit=int(body.get("limit", 200)), offset=int(body.get("offset", 0)))}
+    if path == "/api/report/export":
+        out = body.get("path") or ""
+        if not out:
+            raise ValueError("Choose where to save the export")
+        if not out.lower().endswith((".xlsx", ".csv", ".json")):
+            out += ".xlsx"
+        return reg().export(rfilters(), scale, out)
+    if path == "/api/report/claude":
+        f = rfilters()
+        j = jobs.start("Writing a report with Claude", reporting.build_report, reg(), s, body.get("preset") or "all",
+                       f, body.get("question", ""), user, lib().root)
+        return {"job": j.id}
+    if path == "/api/report/read":
+        return {"markdown": reporting.read_report(body["path"], lib().root)}
+    if path == "/api/register/publish":
+        publish_now(body["id"])
+        reg().sync(force=True)
         return {"ok": True}
+    if path == "/api/project/suggest-profile":
+        p = get_project(body["id"])
+        j = jobs.start("Reading the tender profile", reporting.suggest_profile, p, s)
+        return {"job": j.id}
 
     # jobs
     if path == "/api/job":

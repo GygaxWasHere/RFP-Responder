@@ -12,10 +12,12 @@ import uuid
 import copy
 import threading
 
-APP_NAME = "RFP Responder"
-APP_VERSION = "0.1.0"
+from . import osdep
 
-BASE_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "RFPResponder")
+APP_NAME = "RFP Responder"
+APP_VERSION = "0.3.0"
+
+BASE_DIR = osdep.data_dir()  # Windows: %LOCALAPPDATA%\RFPResponder; macOS: ~/Library/Application Support/RFPResponder
 SETTINGS_FILE = os.path.join(BASE_DIR, "settings.json")
 PROJECTS_DIR = os.path.join(BASE_DIR, "projects")
 RUNS_DIR = os.path.join(BASE_DIR, "runs")
@@ -34,7 +36,11 @@ DEFAULT_SCALE = [
 DEFAULT_SETTINGS = {
     "user_name": "",
     "user_initials": "",
-    "db_path": os.path.join(BASE_DIR, "knowledge.db"),
+    "kb_root": os.path.join(BASE_DIR, "knowledge"),   # shared folder with the knowledge areas
+    "db_path": os.path.join(BASE_DIR, "knowledge.db"), # old single-file knowledge base (import only)
+    "legacy_imported": False,
+    "extra_libraries": [],
+    "report_role": "product",  # the Reporting tab opens on this view: product | security | marketing | all   # folders to treat as synced SharePoint libraries, if not found automatically
     "claude_path": "claude",
     "model": "opus",
     "effort": "high",
@@ -73,7 +79,11 @@ def load_settings():
         except (OSError, ValueError):
             pass
     if not s.get("user_name"):
-        s["user_name"] = os.environ.get("USERNAME", "")
+        s["user_name"] = os.environ.get("USERNAME") or os.environ.get("USER", "")
+    extra = [x for x in (s.get("extra_libraries") or []) if x]
+    if extra != osdep.EXTRA_LIBRARIES:
+        osdep.EXTRA_LIBRARIES = extra
+        osdep._libs["at"] = 0
     return s
 
 
@@ -87,10 +97,42 @@ def save_settings(new):
 
 
 def _atomic_write(path, data):
-    tmp = path + ".tmp"
+    tmp = f"{path}.{uuid.uuid4().hex[:6]}.tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=1)
-    os.replace(tmp, path)
+    replace_retry(tmp, path)
+
+
+def replace_retry(tmp, path, tries=20):
+    """os.replace, retried briefly: on Windows it fails while another thread (or OneDrive, or a virus
+    scanner) has the target open for a moment."""
+    for i in range(tries):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if i == tries - 1:
+                try:
+                    os.remove(tmp)
+                finally:
+                    raise
+            time.sleep(0.05 * (i + 1))
+
+
+VIEW_FILE = os.path.join(BASE_DIR, "view.json")
+
+
+def save_view(v):
+    _ensure_dirs()
+    _atomic_write(VIEW_FILE, v)
+
+
+def load_view():
+    try:
+        with open(VIEW_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
 
 
 # ---------------------------------------------------------------- projects
@@ -104,12 +146,18 @@ def new_project(name="New response"):
         "role": "Vendor",
         "created": time.strftime("%Y-%m-%d %H:%M"),
         "updated": time.strftime("%Y-%m-%d %H:%M"),
-        "req_source": {"path": "", "kind": "", "sheet": "", "header_row": 1, "first_row": 2,
+        "req_source": {"path": "", "kind": "", "sheet": "", "header_row": 1, "first_row": 2, "last_row": "",
+                       "start_heading": -1, "stop_heading": -1,
                        "id_col": "", "text_col": "", "section_col": "", "context_col": "",
                        "docx_mode": "lists"},
         "folders": [],          # [{"path":..., "label":..., "index": True}]
         "websites": [],         # [{"url":..., "max_pages": 200}]
         "use_kb": True,
+        "owner": "",            # who started the response (for the register)
+        "register_share": True, # publish requirements + compliance to the shared register for reporting
+        "profile": {"vertical": "", "country": "", "region": "", "end_user_type": "", "consultant": "",
+                    "partner": "", "purpose": "", "concerns": "", "themes": [], "due_date": "", "outcome": "Open"},
+        "areas": None,          # knowledge areas to use (slugs); None = all
         "products": [],         # names from settings["products"]
         "product_rules": "",    # e.g. "Use XProtect only, not BriefCam, even for analytics"
         "strategy": "",
@@ -156,6 +204,12 @@ def load_project(pid):
         p["output"].setdefault(k, v)
         for kk, vv in v.items():
             p["output"][k].setdefault(kk, vv)
+    for k, v in base["req_source"].items():
+        p["req_source"].setdefault(k, v)
+    for k, v in base["profile"].items():
+        p["profile"].setdefault(k, v)
+    if not p.get("owner"):
+        p["owner"] = load_settings().get("user_name", "")
     return p
 
 
@@ -176,7 +230,12 @@ def list_projects():
     return sorted(out, key=lambda x: x.get("updated") or "", reverse=True)
 
 
+def project_db_path(pid):
+    """Local database with the response's own indexed folders and websites."""
+    return os.path.join(PROJECTS_DIR, _safe_id(pid) + ".db")
+
+
 def delete_project(pid):
-    path = project_path(pid)
-    if os.path.exists(path):
-        os.remove(path)
+    for path in (project_path(pid), project_db_path(pid)):
+        if os.path.exists(path):
+            os.remove(path)

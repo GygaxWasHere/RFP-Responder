@@ -41,7 +41,7 @@ def extract(path):
         return _xlsx(path)
     if ext == ".pdf":
         return _pdf(path)
-    return _markitdown(path)
+    return _other(path)
 
 
 def _docx(path):
@@ -125,13 +125,67 @@ def _pdf(path):
     return out
 
 
-def _markitdown(path):
+def _other(path):
+    """PowerPoint, Outlook .msg and .eml. Unreadable files give no text instead of an error."""
+    ext = os.path.splitext(path)[1].lower()
     try:
-        from markitdown import MarkItDown
-        res = MarkItDown().convert(path)
-        return [("", clean(res.text_content))]
-    except Exception:  # noqa: BLE001 - unsupported/odd files are skipped
+        if ext == ".pptx":
+            return _pptx(path)
+        if ext == ".msg":
+            return _msg(path)
+        if ext == ".eml":
+            return _eml(path)
+    except Exception:  # noqa: BLE001 - odd files are skipped
         return []
+    return []
+
+
+def _pptx(path):
+    from pptx import Presentation
+    out = []
+    for i, slide in enumerate(Presentation(path).slides, 1):
+        texts = []
+        for shape in slide.shapes:
+            if shape.has_text_frame:
+                texts.append(shape.text_frame.text)
+            elif getattr(shape, "has_table", False) and shape.has_table:
+                for row in shape.table.rows:
+                    texts.append(" | ".join(c.text for c in row.cells))
+        if slide.has_notes_slide and slide.notes_slide.notes_text_frame is not None:
+            texts.append(slide.notes_slide.notes_text_frame.text)
+        t = clean("\n".join(x for x in texts if x and x.strip()))
+        if t:
+            out.append((f"Slide {i}", t))
+    return out
+
+
+def _mail_text(subject, sender, date, body):
+    head = "\n".join(f"{k}: {v}" for k, v in (("Subject", subject), ("From", sender), ("Date", date)) if v)
+    return [(subject or "Mail", clean(head + "\n\n" + (body or "")))]
+
+
+def _msg(path):
+    import extract_msg
+    m = extract_msg.openMsg(path)
+    try:
+        body = m.body
+        if not body and m.htmlBody:
+            body = "\n".join(t for _, t in html_sections(m.htmlBody.decode("utf-8", "replace"))[1])
+        return _mail_text(m.subject, m.sender, str(m.date or ""), body)
+    finally:
+        m.close()
+
+
+def _eml(path):
+    import email
+    from email import policy
+    with open(path, "rb") as f:
+        msg = email.message_from_binary_file(f, policy=policy.default)
+    part = msg.get_body(preferencelist=("plain", "html"))
+    body = part.get_content() if part else ""
+    if part is not None and part.get_content_type() == "text/html":
+        body = "\n".join(t for _, t in html_sections(body)[1])
+    return _mail_text(msg["subject"], msg["from"], msg["date"], body)
 
 
 def html_sections(html):

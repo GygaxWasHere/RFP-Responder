@@ -69,9 +69,7 @@ def crawl_site(kb, start_url, max_pages=200, prefix=None, delay=0.5, user="", jo
 
     start_url = _norm(start_url)
     sp = urllib.parse.urlsplit(start_url)
-    if prefix is None:
-        base = sp.path if sp.path.endswith("/") else sp.path.rsplit("/", 1)[0] + "/"
-        prefix = f"{sp.scheme}://{sp.netloc}{base}"
+    prefix = prefix_of(start_url, prefix)
     collection = collection or prefix
     rp = urllib.robotparser.RobotFileParser()
     rp.set_url(f"{sp.scheme}://{sp.netloc}/robots.txt")
@@ -137,7 +135,16 @@ def crawl_site(kb, start_url, max_pages=200, prefix=None, delay=0.5, user="", jo
     msg = f"{collection}: {stored} pages stored, {unchanged} unchanged, {failed} failed ({n} visited)"
     if job:
         job.log(msg)
-    return {"stored": stored, "unchanged": unchanged, "failed": failed, "visited": n}
+    return {"stored": stored, "unchanged": unchanged, "failed": failed, "visited": n, "collection": collection}
+
+
+def prefix_of(start_url, prefix=None):
+    """The folder of the start URL: pages below it are read, and it names the collection."""
+    if prefix:
+        return prefix
+    sp = urllib.parse.urlsplit(_norm(start_url))
+    base = sp.path if sp.path.endswith("/") else sp.path.rsplit("/", 1)[0] + "/"
+    return f"{sp.scheme}://{sp.netloc}{base}"
 
 
 def _skip(url):

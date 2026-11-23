@@ -4,4 +4,6 @@ pypdf>=4.0
 requests>=2.31
 beautifulsoup4>=4.12
 lxml>=5.0
-markitdown[docx,pptx,outlook]>=0.1
+python-pptx>=1.0
+extract-msg>=0.48
+pyodbc>=5.0; sys_platform == "win32"   # Mac: optional, see README (Databases)

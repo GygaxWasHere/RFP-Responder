@@ -17,7 +17,7 @@ import subprocess
 import time
 import urllib.parse
 
-from . import config, extract
+from . import config, extract, osdep, readable, register
 
 SYSTEM_PROMPT = """You are a senior bid and compliance specialist. You write compliance responses to tender
 requirements on behalf of the bidder. The responses will be used in real tender submissions and can become
@@ -51,7 +51,12 @@ Rules:
 10. Use the win strategy to choose emphasis and wording, never to overstate a capability.
 11. `links` are public URLs the customer can open to read more (product documentation). Only give URLs
     you have seen in the extracts or fetched. Never guess a URL.
-12. Never modify files. Only read."""
+12. Never modify files. Only read.
+13. Classify each requirement for the bid desk's reporting: `topic` (the closest of the listed topics),
+    `security_relevant` (true when it concerns cybersecurity, data protection, access control or secure
+    development), `standards` (standards, certifications or regulations the requirement names, e.g.
+    "ISO 27001", "IEC 62443-4-1", "NDAA", "GDPR"; empty if none) and, when the answer is not fully
+    compliant, `gap_type` (why: the closest of the listed gap types)."""
 
 ROW_SCHEMA = {
     "type": "object",
@@ -72,6 +77,10 @@ ROW_SCHEMA = {
         "confidence": {"type": "integer"},
         "gaps": {"type": "string"},
         "question": {"type": "string"},
+        "topic": {"type": "string", "enum": register.TOPICS},
+        "security_relevant": {"type": "boolean"},
+        "standards": {"type": "array", "items": {"type": "string"}},
+        "gap_type": {"type": "string", "enum": [""] + register.GAP_TYPES},
     },
     "required": ["key", "compliance", "product", "explanation", "responsible", "evidence", "confidence"],
 }
@@ -87,17 +96,22 @@ def schema(codes):
 # ------------------------------------------------------------------ claude executable
 
 def resolve_claude(path_setting):
-    """Find claude.exe. The npm 'claude.cmd' shim is avoided: cmd.exe mangles long arguments."""
+    """Find the Claude Code executable.
+    Windows: claude.exe; the npm 'claude.cmd' shim is avoided because cmd.exe mangles long arguments.
+    macOS: apps started from Finder do not get the shell's PATH, so the usual install places are tried."""
     p = (path_setting or "claude").strip().strip('"')
+    if not osdep.IS_WIN:
+        if os.path.isfile(p) and os.access(p, os.X_OK):
+            return p
+        w = shutil.which(p)
+        return w or next((c for c in osdep.claude_candidates() if c and os.access(c, os.X_OK)), p)
     if os.path.isfile(p) and p.lower().endswith(".exe"):
         return p
     cand = []
     w = shutil.which(p)
     if w:
         cand.append(w)
-    cand += [shutil.which("claude.exe") or "", shutil.which("claude.cmd") or "",
-             os.path.expandvars(r"%USERPROFILE%\.local\bin\claude.exe"),
-             os.path.expandvars(r"%APPDATA%\npm\claude.cmd")]
+    cand += osdep.claude_candidates()
     for c in cand:
         if not c:
             continue
@@ -140,10 +154,10 @@ def run_claude(settings, prompt, folders, codes, run_dir, log=None):
         cmd += ["--effort", settings["effort"]]
     for d in folders:
         if os.path.isdir(d):
-            cmd += ["--add-dir", d]
+            cmd += ["--add-dir", os.path.realpath(d)]  # long form: Claude Code compares resolved paths
     t0 = time.time()
     r = subprocess.run(cmd, input=prompt, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                       cwd=run_dir, timeout=int(settings.get("timeout_min", 20)) * 60,
+                       cwd=os.path.realpath(run_dir), timeout=int(settings.get("timeout_min", 20)) * 60,
                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     out = r.stdout.strip()
     try:
@@ -159,9 +173,51 @@ def run_claude(settings, prompt, folders, codes, run_dir, log=None):
     return data["structured_output"].get("responses", []), data.get("total_cost_usd", 0)
 
 
+def claude_call(settings, prompt, run_dir, system, json_schema=None, read_dirs=(), model=None):
+    """One headless Claude Code call with read-only file tools on read_dirs (no web).
+    Returns (structured output or Markdown text, cost in USD)."""
+    exe = resolve_claude(settings.get("claude_path"))
+    os.makedirs(run_dir, exist_ok=True)
+    sp_file = os.path.join(run_dir, "system_prompt.txt")
+    with open(sp_file, "w", encoding="utf-8") as f:
+        f.write(system)
+    with open(os.path.join(run_dir, "prompt.md"), "w", encoding="utf-8") as f:
+        f.write(prompt)
+    cmd = [exe, "-p", "--output-format", "json", "--no-session-persistence", "--tools", "Read,Grep,Glob",
+           "--allowedTools", "Read", "Grep", "Glob", "--permission-mode", "dontAsk",
+           "--append-system-prompt-file", sp_file]
+    if json_schema:
+        cmd += ["--json-schema", json.dumps(json_schema)]
+    if model or settings.get("model"):
+        cmd += ["--model", model or settings["model"]]
+    if settings.get("effort"):
+        cmd += ["--effort", settings["effort"]]
+    for d in read_dirs:
+        if os.path.isdir(d):
+            cmd += ["--add-dir", os.path.realpath(d)]
+    r = subprocess.run(cmd, input=prompt, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       cwd=os.path.realpath(run_dir), timeout=int(settings.get("timeout_min", 20)) * 60,
+                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    out = r.stdout.strip()
+    try:
+        data = json.loads(out[out.index("{"):]) if out else {}
+    except ValueError:
+        data = {}
+    with open(os.path.join(run_dir, "answer.json"), "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=1)
+    if not data or data.get("is_error") or (json_schema and "structured_output" not in data):
+        msg = data.get("result") or r.stderr.strip()[-800:] or out[-800:] or f"exit code {r.returncode}"
+        raise RuntimeError(f"Claude Code did not return an answer: {msg}")
+    denied = [d.get("tool_input", {}).get("file_path") or d.get("tool_name") for d in data.get("permission_denials") or []]
+    if denied and read_dirs:
+        raise RuntimeError("Claude Code was not allowed to read the data it needed (" + ", ".join(map(str, denied[:3])) +
+                           "). Nothing was saved.")
+    return (data["structured_output"] if json_schema else data.get("result", "")), data.get("total_cost_usd", 0)
+
+
 # ------------------------------------------------------------------ prompt
 
-def build_prompt(project, settings, batch, kb, sources):
+def build_prompt(project, settings, batch, kb, sources, mirrors=None):
     """sources: dict label -> {chunk dict} filled here."""
     scale = settings.get("scale") or config.DEFAULT_SCALE
     prods = {p["name"]: p.get("notes", "") for p in settings.get("products", [])}
@@ -197,12 +253,21 @@ def build_prompt(project, settings, batch, kb, sources):
     L.append("\n# Where you may look for more evidence (read only)")
     for f in project.get("folders", []):
         L.append(f"- {f['path']}" + (f"  ({f['label']})" if f.get("label") else ""))
+    if kb and project.get("use_kb", True) and hasattr(kb, "folders"):
+        for f in kb.folders():
+            folders.append(f)
+            L.append(f"- {f}  (knowledge area source)")
     if settings.get("allow_web_lookup") and settings.get("web_domains"):
         L.append("- Web pages on: " + ", ".join(settings["web_domains"]))
     if not folders:
         L.append("- Only the extracts below.")
-    L.append("Search the folders (Grep/Glob/Read) when the extracts below are not enough. "
-             "Word and Excel files cannot be read directly; prefer PDF, text and the extracts.")
+    L.append("Search the folders (Grep/Glob/Read) when the extracts below are not enough.")
+    if mirrors:
+        L.append("Word, Excel, PowerPoint and Outlook files cannot be read directly, so each has a readable text "
+                 "copy with the same relative path plus '.txt' in these folders (read only):")
+        for md, orig in mirrors.items():
+            L.append(f"- {md}  = copies of {orig}")
+        L.append("Read and grep the copies. In `evidence`, cite the ORIGINAL file path (without .txt).")
 
     L.append("\n# Requirements to answer")
     for row in batch:
@@ -210,7 +275,7 @@ def build_prompt(project, settings, batch, kb, sources):
         L.append(row["text"])
         if row.get("context"):
             L.append(f"Customer guidance for this requirement: {row['context']}")
-        if kb and project.get("use_kb", True):
+        if kb:
             hits = kb.search(row["text"] + " " + (row.get("section") or ""), limit=int(settings.get("kb_hits", 8)))
             if hits:
                 L.append("### Extracts from the knowledge base")
@@ -218,6 +283,8 @@ def build_prompt(project, settings, batch, kb, sources):
                 label = f"S{len(sources) + 1}"
                 sources[label] = h
                 where = " - ".join(x for x in (h.get("title"), h.get("heading")) if x)
+                if h.get("area_name"):
+                    where = f"({h['area_name']}) {where}"
                 L.append(f"[{label}] {where}\nSource: {h['location']}\n\"\"\"\n{h['text']}\n\"\"\"")
             precs = kb.precedents(row["text"], limit=int(settings.get("precedent_hits", 3)),
                                   exclude_project=project.get("id"))
@@ -241,8 +308,10 @@ def _norm(t):
 
 
 class Verifier:
-    def __init__(self, kb, settings, folders, sources):
+    def __init__(self, kb, settings, folders, sources, mirrors=None):
         self.kb, self.settings, self.sources = kb, settings, sources
+        self.mirrors = mirrors or {}
+        folders = list(folders) + list(self.mirrors)
         self.folders = [os.path.normcase(os.path.abspath(f)) for f in folders]
         self.cache = {}
         self.link_cache = {}
@@ -256,6 +325,8 @@ class Verifier:
             h = self.sources[s]
             full = self.kb.doc_text(h["location"]) if self.kb else None
             txt = (h["text"] + "\n" + (full or ""))
+        elif s.startswith("mssql://"):
+            txt = self.kb.doc_text(s) if self.kb else None
         elif s.startswith(("http://", "https://")):
             txt = self.kb.doc_text(s) if self.kb else None
             if txt is None and self._domain_ok(s):
@@ -319,7 +390,7 @@ class Verifier:
         if s in self.sources:
             h = self.sources[s]
             return h["location"], " - ".join(x for x in (h.get("title"), h.get("heading")) if x)
-        return src, ""
+        return readable.to_original(src, self.mirrors) if self.mirrors and not s.startswith(("http", "mssql")) else src, ""
 
 
 def apply_answer(row, ans, verifier, scale, strict):
@@ -331,6 +402,10 @@ def apply_answer(row, ans, verifier, scale, strict):
     row["confidence"] = ans.get("confidence")
     row["gaps"] = ans.get("gaps", "") or ""
     row["question"] = ans.get("question", "") or ""
+    row["topic"] = ans.get("topic") or ""
+    row["security"] = ans.get("security_relevant")
+    row["standards"] = [s for s in (ans.get("standards") or []) if isinstance(s, str) and s.strip()][:10]
+    row["gap_type"] = ans.get("gap_type") or ""
     evs = []
     for ev in ans.get("evidence") or []:
         loc, where = verifier.describe(ev.get("source", ""))
@@ -374,6 +449,8 @@ def respond(project, settings, kb, keys=None, job=None, on_batch=None):
     if not rows:
         raise ValueError("No requirements selected")
     folders = [f["path"] for f in project.get("folders", []) if f.get("path")]
+    if kb and project.get("use_kb", True) and hasattr(kb, "folders"):
+        folders += [f for f in kb.folders() if f not in folders]
     bs = max(1, int(settings.get("batch_size", 5)))
     batches = [rows[i:i + bs] for i in range(0, len(rows), bs)]
     run_dir = os.path.join(config.RUNS_DIR, project["id"], time.strftime("%Y%m%d-%H%M%S"))
@@ -383,17 +460,21 @@ def respond(project, settings, kb, keys=None, job=None, on_batch=None):
     log = job.log if job else (lambda *_: None)
     log(f"Answering {len(rows)} requirements in {len(batches)} batches "
         f"(model {settings.get('model')}, {settings.get('parallel', 2)} in parallel)")
+    if job:
+        job.update(message="Preparing readable copies of Word/Excel files")
+    mirrors = readable.prepare(folders, kb, job)
+    claude_dirs = folders + list(mirrors)
 
     def work(i, batch):
         if job and job.cancelled:
             return i, batch, None, {}, 0
         sources = {}
-        prompt = build_prompt(project, settings, batch, kb, sources)
+        prompt = build_prompt(project, settings, batch, kb, sources, mirrors)
         bdir = os.path.join(run_dir, f"batch{i + 1:03d}")
         os.makedirs(bdir, exist_ok=True)
         with open(os.path.join(bdir, "prompt.md"), "w", encoding="utf-8") as f:
             f.write(prompt)
-        answers, cost = run_claude(settings, prompt, folders, codes, bdir, log)
+        answers, cost = run_claude(settings, prompt, claude_dirs, codes, bdir, log)
         with open(os.path.join(bdir, "answers.json"), "w", encoding="utf-8") as f:
             json.dump(answers, f, ensure_ascii=False, indent=1)
         return i, batch, answers, sources, cost
@@ -410,7 +491,7 @@ def respond(project, settings, kb, keys=None, job=None, on_batch=None):
             if answers is None:
                 continue
             total_cost += cost or 0
-            ver = Verifier(kb, settings, folders, sources)
+            ver = Verifier(kb, settings, folders, sources, mirrors)
             by_key = {a.get("key"): a for a in answers}
             for row in batch:
                 a = by_key.get(row["key"])

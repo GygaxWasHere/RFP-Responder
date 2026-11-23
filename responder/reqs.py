@@ -73,7 +73,7 @@ def _guess(grid):
     return best
 
 
-def load_excel(path, sheet, header_row, first_row, id_col, text_col, section_col="", context_col=""):
+def load_excel(path, sheet, header_row, first_row, id_col, text_col, section_col="", context_col="", last_row=None):
     import openpyxl
     wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
     ws = wb[sheet] if sheet else wb.worksheets[0]
@@ -82,7 +82,10 @@ def load_excel(path, sheet, header_row, first_row, id_col, text_col, section_col
     si = column_index_from_string(section_col) if section_col else None
     ci = column_index_from_string(context_col) if context_col else None
     out, section = [], ""
-    for rn, row in enumerate(ws.iter_rows(min_row=int(first_row), values_only=True), int(first_row)):
+    last = int(last_row) if str(last_row or "").strip().isdigit() and int(last_row) > 0 else None
+    if last is not None and last < int(first_row):
+        raise ValueError(f"The last row ({last}) is before the first row ({first_row})")
+    for rn, row in enumerate(ws.iter_rows(min_row=int(first_row), max_row=last, values_only=True), int(first_row)):
         def cell(i):
             if i is None or i > len(row):
                 return ""
@@ -107,9 +110,28 @@ def load_excel(path, sheet, header_row, first_row, id_col, text_col, section_col
 NUM_RE = re.compile(r"^\s*((?:\d+\.)*\d+)\.?\s+(.*)$")
 
 
-def load_word(path, mode="lists"):
+def load_word(path, mode="lists", start_heading=None, stop_heading=None):
     """mode: 'lists' = bullets/numbered items and sentences with shall/must/...;
-             'paragraphs' = every body paragraph; 'tables' = also every table row."""
+             'paragraphs' = every body paragraph; 'tables' = also every table row.
+    start_heading / stop_heading: positions in word_outline(); only requirements from the start
+    heading up to (not including) the stop heading are returned."""
+    rows, _ = _parse_word(path, mode)
+    start = int(start_heading) if str(start_heading).lstrip("-").isdigit() and int(start_heading) >= 0 else None
+    stop = int(stop_heading) if str(stop_heading).lstrip("-").isdigit() and int(stop_heading) >= 0 else None
+    if start is not None and stop is not None and stop <= start:
+        raise ValueError("'Stop before' must be a heading after 'Start at'")
+    return [r for r in rows if (start is None or r["h"] >= start) and (stop is None or r["h"] < stop)]
+
+
+def word_outline(path, mode="lists"):
+    """Headings in document order, with the number of requirements found under each."""
+    rows, heads = _parse_word(path, mode)
+    for h in heads:
+        h["count"] = sum(1 for r in rows if r["h"] == h["idx"])
+    return {"headings": heads, "before_first": sum(1 for r in rows if r["h"] < 0), "total": len(rows)}
+
+
+def _parse_word(path, mode="lists"):
     import docx
     from docx.table import Table
     from docx.text.paragraph import Paragraph
@@ -118,13 +140,16 @@ def load_word(path, mode="lists"):
     section_id, section_title = "", ""
     per_section = {}
     out = []
+    heads = []
 
     def add(text):
         nonlocal section_id
         sid = section_id or "0"
         per_section[sid] = per_section.get(sid, 0) + 1
         rid = f"{sid}.{per_section[sid]}" if section_id else str(per_section[sid])
-        out.append(blank_row(f"w{len(out) + 1}", rid, f"{section_id} {section_title}".strip(), text))
+        r = blank_row(f"w{len(out) + 1}", rid, f"{section_id} {section_title}".strip(), text)
+        r["h"] = len(heads) - 1  # index of the heading this requirement sits under (-1 = before any)
+        out.append(r)
 
     for el in d.element.body.iterchildren():
         tag = el.tag.rsplit("}", 1)[-1]
@@ -147,6 +172,7 @@ def load_word(path, mode="lists"):
                         counters[i] = 0
                     section_id = ".".join(str(c) for c in counters[:lvl] if c) or str(counters[0])
                     section_title = text
+                heads.append({"idx": len(heads), "level": lvl, "id": section_id, "title": section_title[:120]})
                 continue
             is_list = el.find(".//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}numPr") is not None \
                 or "list" in style.lower()
@@ -161,7 +187,7 @@ def load_word(path, mode="lists"):
                         cells.append(ct)
                 if cells and len(" ".join(cells)) > 15:
                     add(" | ".join(cells))
-    return out
+    return out, heads
 
 
 def _heading_level(p, style):
@@ -185,7 +211,7 @@ def load(spec):
     if k == "excel":
         return load_excel(path, spec.get("sheet"), spec.get("header_row", 1), spec.get("first_row", 2),
                           spec.get("id_col", ""), spec["text_col"], spec.get("section_col", ""),
-                          spec.get("context_col", ""))
+                          spec.get("context_col", ""), spec.get("last_row"))
     if k == "word":
-        return load_word(path, spec.get("docx_mode", "lists"))
+        return load_word(path, spec.get("docx_mode", "lists"), spec.get("start_heading"), spec.get("stop_heading"))
     raise ValueError("Requirements must come from an .xlsx, .xlsm or .docx file")
