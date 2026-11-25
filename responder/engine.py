@@ -35,13 +35,26 @@ Rules:
    facts you have not seen ("may", "probably", "some components might"); put open points in `gaps`.
    Before you settle on partial or non-compliant, search the allowed folders and web pages for
    confirming evidence.
-4. If the evidence does not clearly support the requirement, do not claim compliance. Use the partial or
-   non-compliant code, explain the gap in `gaps`, lower `confidence`, and suggest a clarification
-   question where useful.
+4. Compliance says what the offered product does. `confidence` says how sure you are. Keep the two apart:
+   - Compliant: the offered products meet the requirement as written. This includes Milestone modules,
+     extensions, add-ons and licences that belong to the offered products (name them), and normal
+     configuration by the integrator. A small detail you could not confirm is not a gap: stay compliant,
+     lower `confidence` and say in `gaps` what to check.
+   - Partially compliant: only when a specific part of the requirement is not met by the offered
+     products, or needs a third-party product, custom development or a workaround. Name that part in
+     `gaps`. If you cannot name it, the answer is not partial.
+   - Not compliant: the core of the requirement is not met.
+   - Missing evidence is not a reason for partial. Never use partial as a safe middle. Choose the code the
+     product facts support, set `confidence` below 50, and say in `gaps` what must be confirmed. Never
+     claim compliance for something you have reason to believe the product cannot do.
+   `confidence` (0-100): 90+ a verified quote states it directly; 70-89 the evidence supports it with
+   little inference; 50-69 indirect evidence or partly inferred; below 50 not confirmed, a person must check.
 5. Earlier approved responses ([P..]) show how the team answered similar requirements before. Use them
    for wording and consistency, but they are not evidence on their own: confirm the facts in a source.
 6. Use the acknowledgement code for requirements that are not a product capability (installation,
-   construction, project management, the customer's own processes). Say who is responsible.
+   construction, cabling, network, hardware supply, project management, the customer's own processes,
+   general scope statements, headings). Put who is responsible in `responsible` (one of the listed
+   parties). See "Length" below: these answers are one short sentence.
 7. Name the product(s) you considered for each requirement in `product`. Use only the products you are
    told to consider, and respect the product rules. In `explanation`, name a product, module, edition
    or licence only where it adds information: when the function comes from a specific module, add-on,
@@ -49,7 +62,7 @@ Rules:
 8. Respect the bidder's role: if the bidder is the software vendor, do not commit to integrator or
    customer tasks; state them as their responsibility.
 9. Write plain, neutral, tender-safe language: short sentences, no marketing superlatives, no
-   "fully", "always" or "guaranteed" unless the source says so. 2-5 sentences per explanation.
+   "fully", "always" or "guaranteed" unless the source says so. Keep to the length rules below.
 10. Use the win strategy to choose emphasis and wording, never to overstate a capability.
 11. `links` are public URLs the customer can open to read more (product documentation). Only give URLs
     you have seen in the extracts or fetched. Never guess a URL.
@@ -81,7 +94,18 @@ D. Vary the openings. Never start like the openings listed as already used, and 
 E. `considerations`: one or two sentences, in perspective, on what the customer or project should
    consider for this requirement and why it matters for the result (design, sizing, licensing, operation,
    risk, dependency on other parties). It is advice, so it must not state product facts the evidence
-   does not back. Leave it empty when there is nothing useful to add; do not pad."""
+   does not back. Leave it empty when there is nothing useful to add; do not pad. Most answers need none,
+   and acknowledged answers never get one.
+
+Length (the evaluator reads hundreds of answers; shorter is better when nothing is lost):
+- `responsible` is only the party name from the list given, e.g. "Contractor". No details in brackets.
+- Another party's scope (acknowledged, responsible is not Milestone): one short sentence, e.g. "Noted.
+  This is in the contractor's scope." Add one more sentence only when the VMS has a specific role in it
+  that the customer needs to know. No evidence, links, gaps or considerations are needed.
+- General scope statements, headings, definitions: "Noted." or "Noted and accepted."
+- Simple compliant requirement: one or two sentences, at most about 40 words.
+- Other answers (complex compliant, partial, not compliant): at most about 80 words. Detail for the bid
+  team goes in `gaps`, not in the answer."""
 
 ROW_SCHEMA = {
     "type": "object",
@@ -112,11 +136,18 @@ ROW_SCHEMA = {
 }
 
 
-def schema(codes):
+def schema(codes, parties=None):
     s = json.loads(json.dumps(ROW_SCHEMA))
     s["properties"]["compliance"]["enum"] = codes
+    if parties:
+        s["properties"]["responsible"]["enum"] = list(parties)
     return {"type": "object", "properties": {"responses": {"type": "array", "items": s}},
             "required": ["responses"]}
+
+
+def parties(settings):
+    """The parties an answer can name as responsible (Settings), e.g. Milestone, Contractor, Customer."""
+    return [p.strip() for p in (settings.get("responsible_parties") or config.DEFAULT_PARTIES) if p and p.strip()]
 
 
 # ------------------------------------------------------------------ claude executable
@@ -171,7 +202,7 @@ def run_claude(settings, prompt, folders, codes, run_dir, log=None):
     if settings.get("allow_web_lookup") and settings.get("web_domains"):
         tools.append("WebFetch")
         allowed += [f"WebFetch(domain:{d})" for d in settings["web_domains"]]
-    cmd = [exe, "-p", "--output-format", "json", "--json-schema", json.dumps(schema(codes)),
+    cmd = [exe, "-p", "--output-format", "json", "--json-schema", json.dumps(schema(codes, parties(settings))),
            "--no-session-persistence", "--tools", ",".join(tools), "--allowedTools", *allowed,
            "--permission-mode", "dontAsk", "--append-system-prompt-file", sp_file]
     if settings.get("model"):
@@ -281,6 +312,8 @@ def build_prompt(project, settings, batch, kb, sources, mirrors=None, brief=None
     L.append("\n# Compliance codes (use only these)")
     for s in scale:
         L.append(f"- {s['code']} = {s['label']}: {s.get('meaning', '')}")
+    L.append("\n# Responsible parties (use only these in `responsible`)")
+    L.append(", ".join(parties(settings)))
     folders = [f["path"] for f in project.get("folders", []) if f.get("path")]
     L.append("\n# Where you may look for more evidence (read only)")
     for f in project.get("folders", []):
@@ -530,6 +563,10 @@ def apply_answer(row, ans, verifier, scale, strict):
     if row["compliance"] not in ack_codes and not row["verified"]:
         needs = True
         notes.append("No quote could be verified in the cited sources.")
+    conf = row["confidence"] if isinstance(row["confidence"], (int, float)) else None
+    if row["compliance"] not in ack_codes and conf is not None and conf < 50:
+        needs = True
+        notes.append(f"Low confidence ({conf}%): check the claim before approving.")
     bad_links = [ln["url"] for ln in links if not ln["ok"]]
     if bad_links:
         needs = True

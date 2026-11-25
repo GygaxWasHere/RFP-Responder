@@ -123,6 +123,7 @@ document.addEventListener("input", e => {
     let v = el.type === "checkbox" ? el.checked : (el.type === "number" ? +el.value : el.value);
     if (el.dataset.s === "web_domains") v = el.value.split(/[\s,]+/).filter(Boolean);
     if (el.dataset.s === "extra_libraries") v = el.value.split(/\n/).map(x => x.trim()).filter(Boolean);
+    if (el.dataset.s === "responsible_parties") v = el.value.split(/[\n,]/).map(x => x.trim()).filter(Boolean);
     S.settings[el.dataset.s] = v;
     clearTimeout(S._st); S._st = setTimeout(() => safe(() => api("/api/settings", S.settings)), 600);
   }
@@ -406,7 +407,7 @@ VIEWS.output = () => {
         <div class="field"><label>Product considered</label>${colSelect("output.excel.product_col", x.product_col)}</div>
         <div class="field"><label>Links</label>${colSelect("output.excel.links_col", x.links_col)}</div>
         <div class="field"><label>Evidence quotes</label>${colSelect("output.excel.evidence_col", x.evidence_col)}</div>
-        <div class="field"><label>Responsible</label>${colSelect("output.excel.owner_col", x.owner_col)}</div>
+        <div class="field"><label>Responsible (Milestone / Contractor …)</label>${colSelect("output.excel.owner_col", x.owner_col)}</div>
         <div class="field"><label>Confidence</label>${colSelect("output.excel.confidence_col", x.confidence_col)}</div>
         <div class="field"><label>Initials</label>${colSelect("output.excel.initials_col", x.initials_col)}</div>
         <div class="field"><label>Considerations (own column)</label>${colSelect("output.excel.considerations_col", x.considerations_col)}</div>
@@ -428,6 +429,8 @@ VIEWS.output = () => {
     ${pane("Compliance levels", "checkmark-ok", `<div class="hint">Shared by all responses. Match them to the customer's scale if needed (e.g. Fully / Widely / Not yet / Not supported).</div>
       <table class="apollo"><thead><tr><th>Code</th><th>Label</th><th>Meaning for the responder</th><th>Colour</th><th></th></tr></thead><tbody>${scaleRows}</tbody></table>
       <button class="add" data-act="addScale"><span class="plus">+</span>Add level</button>
+      <div class="field"><label>Responsible parties</label><input class="input" data-s="responsible_parties" value="${esc(parties().join(", "))}">
+        <div class="hint">Comma-separated. Each answer names one of these as responsible, e.g. "Contractor" for installation, cabling or hardware. Map the Responsible column above to write it into Excel.</div></div>
       <div class="footer-actions"><span></span><button class="btn primary" data-act="tab" data-arg="respond">Next: respond →</button></div>`)}</div></div>`;
 };
 
@@ -446,14 +449,42 @@ function wordRange(rs) {
     <div class="hint">${count} of ${o.total} requirements are in this part. The number after each heading is how many requirements sit directly under it.</div>`;
 }
 
+function parties() {
+  return (S.settings && S.settings.responsible_parties && S.settings.responsible_parties.length) ? S.settings.responsible_parties
+    : ["Milestone", "Contractor", "Customer", "Third party", "Milestone + Contractor"];
+}
+
 function filtered() {
   const f = S.filter, rows = S.project.rows;
-  if (f === "all") return rows;
-  if (f === "selected") return rows.filter(r => r.selected);
-  if (f === "unanswered") return rows.filter(r => !r.compliance);
-  if (f === "style") return rows.filter(r => (r.style_flags || []).length);
-  if (f.startsWith("c:")) return rows.filter(r => r.compliance === f.slice(2));
-  return rows.filter(r => r.status === f);
+  let out;
+  if (f === "all") out = rows;
+  else if (f === "selected") out = rows.filter(r => r.selected);
+  else if (f === "unanswered") out = rows.filter(r => !r.compliance);
+  else if (f === "style") out = rows.filter(r => (r.style_flags || []).length);
+  else if (f.startsWith("c:")) out = rows.filter(r => r.compliance === f.slice(2));
+  else out = rows.filter(r => r.status === f);
+  return sortRows(out);
+}
+
+// Sort the review table by a column. Document order is the default; rows without a value always go last.
+const SORTS = {
+  conf: r => r.confidence != null && r.confidence !== "" ? +r.confidence : null,
+  comp: r => { const i = scale().findIndex(s => s.code === r.compliance); return i < 0 ? null : i; },
+  status: r => ({ needs_review: 0, draft: 1, approved: 2 })[r.status] ?? null,
+  resp: r => (r.responsible || "").toLowerCase() || null,
+};
+function sortRows(rows) {
+  const s = S.sort;
+  if (!s || !SORTS[s.key]) return rows;
+  const key = SORTS[s.key], dir = s.dir === "desc" ? -1 : 1;
+  return rows.map((r, i) => [r, key(r), i]).sort((a, b) => {
+    if (a[1] === null || b[1] === null) return (a[1] === null) - (b[1] === null) || a[2] - b[2];
+    return (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0) * dir || a[2] - b[2];
+  }).map(x => x[0]);
+}
+function sortTh(key, label, width, tip) {
+  const on = S.sort && S.sort.key === key, arrow = on ? (S.sort.dir === "desc" ? " ▼" : " ▲") : "";
+  return `<th style="width:${width};cursor:pointer;user-select:none" data-act="sortBy" data-arg="${key}" title="${esc(tip)}">${label}${arrow}</th>`;
 }
 
 VIEWS.respond = () => {
@@ -471,7 +502,7 @@ VIEWS.respond = () => {
     const open = S.open.has(r.key);
     let html = `<tr class="${open ? "open" : ""}"><td><input type="checkbox" class="rowchk" data-key="${esc(r.key)}" ${S.checked.has(r.key) ? "checked" : ""}></td>
       <td>${esc(r.id)}</td><td class="req"><div class="clip">${esc(r.text)}</div></td><td>${compPill(r.compliance)}</td>
-      <td class="small">${esc(r.product || "")}</td><td class="req small"><div class="clip">${esc(r.explanation || "")}</div></td>
+      <td class="small">${esc(r.responsible || "")}</td><td class="req small"><div class="clip">${esc(r.explanation || "")}</div></td>
       <td>${r.compliance ? `<span class="tag ${ok ? "ok" : "err"}" title="Verified quotes / quotes">${ok}/${ev.length}</span>` : ""}</td>
       <td class="small">${r.confidence != null ? r.confidence + "%" : ""}</td><td><span class="tag ${st[0]}">${st[1]}</span></td>
       <td class="nowrap"><button class="iconbtn" data-act="read" data-arg="${esc(r.key)}" title="Open in the reading pane">&#x2922;</button><button class="iconbtn" data-act="toggleOpen" data-arg="${esc(r.key)}" title="Details">${open ? "&#9652;" : "&#9662;"}</button></td></tr>`;
@@ -493,8 +524,9 @@ VIEWS.respond = () => {
       </div>
       <div class="chips">${chips}</div>
       ${last ? `<div class="hint">Last run ${esc(last.at)}: ${last.rows} requirements, model ${esc(last.model)}, cost $${last.cost_usd}${last.errors ? `, <span style="color:var(--W68)">${last.errors} failed batch(es)</span>` : ""}.</div>` : ""}
-      <div class="tablewrap" style="max-height:calc(100vh - 330px)"><table class="apollo"><thead><tr><th style="width:34px"><input type="checkbox" data-act="checkAll"></th><th style="width:80px">ID</th><th>Requirement</th><th style="width:150px">Compliance</th><th style="width:150px">Product</th><th>Response</th><th style="width:70px">Evidence</th><th style="width:60px">Conf.</th><th style="width:110px">Status</th><th style="width:72px"></th></tr></thead>
-      <tbody>${body || `<tr><td colspan="10"><div class="empty">Nothing here.</div></td></tr>`}</tbody></table></div>`)}`;
+      <div class="tablewrap" style="max-height:calc(100vh - 330px)"><table class="apollo"><thead><tr><th style="width:34px"><input type="checkbox" data-act="checkAll"></th><th style="width:80px;cursor:pointer;user-select:none" data-act="sortBy" data-arg="" title="Document order">ID${S.sort ? "" : " ▲"}</th><th>Requirement</th>${sortTh("comp", "Compliance", "150px", "Sort by compliance level")}${sortTh("resp", "Responsible", "120px", "Sort by responsible party")}<th>Response</th><th style="width:70px">Evidence</th>${sortTh("conf", "Conf.", "70px", "Sort by confidence, least sure first. Click again to reverse, a third time for document order.")}${sortTh("status", "Status", "110px", "Sort by status, needs review first")}<th style="width:72px"></th></tr></thead>
+      <tbody>${body || `<tr><td colspan="10"><div class="empty">Nothing here.</div></td></tr>`}</tbody></table></div>
+      <datalist id="parties-list">${parties().map(x => `<option value="${esc(x)}">`).join("")}</datalist>`)}`;
 };
 
 function detail(r) {
@@ -507,7 +539,7 @@ function detail(r) {
       ${r.context ? `<div class="hint"><b>Customer guidance:</b> ${esc(r.context)}</div>` : ""}
       <div class="row3"><div class="field"><label>Compliance</label><select class="input" data-row="${esc(r.key)}" data-f="compliance"><option value="">—</option>${opts}</select></div>
         <div class="field"><label>Product considered</label><input class="input" data-row="${esc(r.key)}" data-f="product" value="${esc(r.product || "")}"></div>
-        <div class="field"><label>Responsible</label><input class="input" data-row="${esc(r.key)}" data-f="responsible" value="${esc(r.responsible || "")}"></div></div>
+        <div class="field"><label>Responsible</label><input class="input" list="parties-list" data-row="${esc(r.key)}" data-f="responsible" value="${esc(r.responsible || "")}"></div></div>
       <div class="field"><label>Response</label><textarea class="input" data-row="${esc(r.key)}" data-f="explanation">${esc(r.explanation || "")}</textarea></div>
       <div class="field"><label>Consider (what the project should take into account, and why it matters)</label><textarea class="input" data-row="${esc(r.key)}" data-f="considerations">${esc(r.considerations || "")}</textarea></div>
       <div class="field"><label>Gaps / why not fully compliant</label><textarea class="input" data-row="${esc(r.key)}" data-f="gaps">${esc(r.gaps || "")}</textarea></div>
@@ -840,6 +872,13 @@ const ACT = {
   addScale: async () => { S.settings.scale.push({ code: "?", label: "New level", meaning: "", color: "#EEEEEE" }); await safe(() => api("/api/settings", S.settings)); render(); },
   rmScale: async i => { S.settings.scale.splice(+i, 1); await safe(() => api("/api/settings", S.settings)); render(); },
   filter: f => { S.filter = f; render(); },
+  sortBy: k => {
+    const s = S.sort;
+    if (!k) S.sort = null;
+    else if (!s || s.key !== k) S.sort = { key: k, dir: "asc" };
+    else S.sort = s.dir === "asc" ? { key: k, dir: "desc" } : null;
+    render();
+  },
   toggleOpen: k => { S.open.has(k) ? S.open.delete(k) : S.open.add(k); render(); },
   checkAll: (_, el) => { filtered().forEach(r => el.checked ? S.checked.add(r.key) : S.checked.delete(r.key)); render(); },
   run: async mode => {

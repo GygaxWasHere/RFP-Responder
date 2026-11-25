@@ -15,7 +15,7 @@ import threading
 from . import osdep
 
 APP_NAME = "RFP Responder"
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.3.1"
 
 BASE_DIR = os.path.realpath(osdep.data_dir())  # Windows: %LOCALAPPDATA%\RFPResponder; macOS: ~/Library/Application Support/RFPResponder
 SETTINGS_FILE = os.path.join(BASE_DIR, "settings.json")
@@ -24,14 +24,22 @@ RUNS_DIR = os.path.join(BASE_DIR, "runs")
 
 DEFAULT_SCALE = [
     {"code": "C", "label": "Compliant", "color": "#E2EFDA",
-     "meaning": "The offered product meets the requirement as standard, and the evidence shows it."},
+     "meaning": "The offered products meet the requirement, including Milestone modules and licences that are "
+                "part of the offer and normal configuration."},
     {"code": "P", "label": "Partially compliant", "color": "#FFF2CC",
-     "meaning": "Met in part, or only with a condition, an add-on, a third party or a workaround."},
+     "meaning": "A specific part of the requirement is not met, or it needs a third-party product, custom work "
+                "or a workaround."},
     {"code": "N", "label": "Not compliant", "color": "#F8CBAD",
      "meaning": "The offered product does not meet the requirement."},
     {"code": "A", "label": "Acknowledged", "color": "#DDEBF7",
      "meaning": "Not a product capability (integrator, customer or contractual scope). Noted and accepted."},
 ]
+# Earlier default wording, replaced in saved settings so old installs get the sharper definitions.
+_OLD_MEANINGS = {
+    "C": "The offered product meets the requirement as standard, and the evidence shows it.",
+    "P": "Met in part, or only with a condition, an add-on, a third party or a workaround.",
+}
+DEFAULT_PARTIES = ["Milestone", "Contractor", "Customer", "Third party", "Milestone + Contractor"]
 
 DEFAULT_SETTINGS = {
     "user_name": "",
@@ -59,6 +67,7 @@ DEFAULT_SETTINGS = {
         {"name": "XProtect Professional+ 2026 R2", "notes": ""},
     ],
     "scale": DEFAULT_SCALE,
+    "responsible_parties": DEFAULT_PARTIES,
 }
 
 _lock = threading.Lock()
@@ -78,6 +87,10 @@ def load_settings():
                 s.update(json.load(f))
         except (OSError, ValueError):
             pass
+    new = {x["code"]: x["meaning"] for x in DEFAULT_SCALE}
+    for x in s.get("scale") or []:
+        if x.get("code") in _OLD_MEANINGS and x.get("meaning") == _OLD_MEANINGS[x["code"]]:
+            x["meaning"] = new[x["code"]]
     if not s.get("user_name"):
         s["user_name"] = os.environ.get("USERNAME") or os.environ.get("USER", "")
     extra = [x for x in (s.get("extra_libraries") or []) if x]

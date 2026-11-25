@@ -193,11 +193,24 @@ def style_check(row, project):
         if head and expl.lower().lstrip().startswith(head):
             flags.append("product_opening")
             break
+    if len(expl.split()) > (ACK_WORDS if _is_ack(row) else MAX_WORDS):
+        flags.append("long")
     row["style_flags"] = flags
     return flags
 
 
-STYLE_NOTES = {"restates": "The answer mostly repeats the requirement.",
+MAX_WORDS = 100  # the prompt asks for at most ~80; flag clearly longer answers
+ACK_WORDS = 30   # acknowledged answers: a sentence or two
+
+
+def _is_ack(row):
+    scale = config.load_settings().get("scale") or config.DEFAULT_SCALE
+    ack = {x["code"] for x in scale if x.get("label", "").lower().startswith(("ack", "not applicable", "n/a"))}
+    return row.get("compliance") in ack
+
+
+STYLE_NOTES = {"long": "The answer is longer than needed.",
+               "restates": "The answer mostly repeats the requirement.",
                "same_opening": "The answer starts like several other answers.",
                "product_opening": "The answer opens with the product name."}
 
