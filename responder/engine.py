@@ -18,7 +18,7 @@ import threading
 import time
 import urllib.parse
 
-from . import config, context, extract, osdep, readable, register
+from . import config, context, extract, osdep, persona, readable, register
 
 SYSTEM_PROMPT = """You are a senior bid and compliance specialist. You write compliance responses to tender
 requirements on behalf of the bidder. The responses will be used in real tender submissions and can become
@@ -61,8 +61,10 @@ Rules:
    licence or edition, or differs from the main offer. Do not open the explanation with the product name.
 8. Respect the bidder's role: if the bidder is the software vendor, do not commit to integrator or
    customer tasks; state them as their responsibility.
-9. Write plain, neutral, tender-safe language: short sentences, no marketing superlatives, no
-   "fully", "always" or "guaranteed" unless the source says so. Keep to the length rules below.
+9. Write plain, tender-safe language: short sentences, no marketing superlatives, no
+   "fully", "always" or "guaranteed" unless the source says so. Keep to the length rules below. Tone,
+   emphasis and vocabulary follow the "Response style and audience" section of the prompt, within
+   these rules.
 10. Use the win strategy to choose emphasis and wording, never to overstate a capability.
 11. `links` are public URLs the customer can open to read more (product documentation). Only give URLs
     you have seen in the extracts or fetched. Never guess a URL.
@@ -103,9 +105,14 @@ Length (the evaluator reads hundreds of answers; shorter is better when nothing 
   This is in the contractor's scope." Add one more sentence only when the VMS has a specific role in it
   that the customer needs to know. No evidence, links, gaps or considerations are needed.
 - General scope statements, headings, definitions: "Noted." or "Noted and accepted."
-- Simple compliant requirement: one or two sentences, at most about 40 words.
-- Other answers (complex compliant, partial, not compliant): at most about 80 words. Detail for the bid
+- Simple compliant requirement: at most about {SHORT} words.
+- Other answers (complex compliant, partial, not compliant): at most about {LONG} words. Detail for the bid
   team goes in `gaps`, not in the answer."""
+
+
+def system_prompt(short=40, long=80):
+    """The answering instructions, with the length limits of the response persona (persona.limits)."""
+    return SYSTEM_PROMPT.replace("{SHORT}", str(short)).replace("{LONG}", str(long))
 
 ROW_SCHEMA = {
     "type": "object",
@@ -191,12 +198,12 @@ def test_claude(settings):
         return {"ok": False, "exe": exe, "version": str(e)}
 
 
-def run_claude(settings, prompt, folders, codes, run_dir, log=None):
+def run_claude(settings, prompt, folders, codes, run_dir, log=None, system=None):
     exe = resolve_claude(settings.get("claude_path"))
     os.makedirs(run_dir, exist_ok=True)
     sp_file = os.path.join(run_dir, "system_prompt.txt")
     with open(sp_file, "w", encoding="utf-8") as f:
-        f.write(SYSTEM_PROMPT)
+        f.write(system or system_prompt())
     tools = ["Read", "Grep", "Glob"]
     allowed = ["Read", "Grep", "Glob"]
     if settings.get("allow_web_lookup") and settings.get("web_domains"):
@@ -309,6 +316,7 @@ def build_prompt(project, settings, batch, kb, sources, mirrors=None, brief=None
             pass
     if project.get("instructions"):
         L.append("\n# Extra instructions\n" + project["instructions"].strip())
+    L.append(persona.prompt_section(project, settings))
     L.append("\n# Compliance codes (use only these)")
     for s in scale:
         L.append(f"- {s['code']} = {s['label']}: {s.get('meaning', '')}")
@@ -615,6 +623,13 @@ def respond(project, settings, kb, keys=None, job=None, on_batch=None):
                 on_batch(project)
         except Exception as e:  # noqa: BLE001 - answering still works without the brief
             log(f"No tender brief ({e}); answering without it")
+    try:
+        if persona.ensure_brief(project, settings, job) and on_batch:
+            on_batch(project)
+    except Exception as e:  # noqa: BLE001 - answering still works with the audience settings alone
+        log(f"No persona brief ({e}); answering with the audience settings only")
+    log(f"Response persona: {persona.summary(project, settings)}")
+    sysprompt = system_prompt(*persona.limits(project, settings))
 
     def work(i, batch):
         if job and job.cancelled:
@@ -625,7 +640,7 @@ def respond(project, settings, kb, keys=None, job=None, on_batch=None):
         os.makedirs(bdir, exist_ok=True)
         with open(os.path.join(bdir, "prompt.md"), "w", encoding="utf-8") as f:
             f.write(prompt)
-        answers, cost = run_claude(settings, prompt, claude_dirs, codes, bdir, log)
+        answers, cost = run_claude(settings, prompt, claude_dirs, codes, bdir, log, sysprompt)
         with open(os.path.join(bdir, "answers.json"), "w", encoding="utf-8") as f:
             json.dump(answers, f, ensure_ascii=False, indent=1)
         # apply right away, so the next batch this worker picks up already sees these answers

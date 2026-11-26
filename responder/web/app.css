@@ -237,3 +237,17 @@ tr.detail td { background: var(--N8); padding: 16px 20px 20px; }
 .helpgrid article a { color: var(--primary-hover); }
 .detail-grid textarea[data-f=considerations] { min-height: 70px; }
 .modal.reader textarea[data-f=considerations] { min-height: 10vh; }
+
+/* response persona: radio cards and the audience equalizer */
+.rcards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+.rcard { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--border-ctrl); background: var(--N8); cursor: pointer; border-radius: 2px; }
+.rcard input { accent-color: var(--P43); margin-top: 2px; }
+.rcard.on { border-color: var(--P33); background: rgba(0,153,218,.10); }
+.rcard .t { font-weight: 600; } .rcard .d { font-size: 12px; line-height: 16px; color: var(--text-med); margin-top: 2px; }
+.eq { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; padding: 14px 8px 10px; background: var(--N8); border: 1px solid var(--border); }
+.eqcol { display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center; }
+.eqslider { writing-mode: vertical-lr; direction: rtl; height: 120px; width: 28px; accent-color: var(--P43); cursor: pointer; }
+.eqlvl { font: 600 11px/14px var(--font); padding: 2px 6px; border-radius: 9px; white-space: nowrap; }
+.eqlvl.lv0 { color: var(--text-med); } .eqlvl.lv1 { background: rgba(0,153,218,.14); }
+.eqlvl.lv2 { background: rgba(0,153,218,.32); } .eqlvl.lv3 { background: var(--P33); color: #fff; }
+.eqname { font-weight: 600; font-size: 13px; } .eqsub { font-size: 11px; line-height: 14px; color: var(--text-med); }

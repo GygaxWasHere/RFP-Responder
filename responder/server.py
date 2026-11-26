@@ -11,7 +11,7 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import config, engine, ingest, jobs, osdep, register, reporting, reqs, sqlsrc, writers
+from . import config, engine, ingest, jobs, osdep, persona, register, reporting, reqs, sqlsrc, writers
 from .kb import KB
 from .library import Library, Scope, clean_sql_source
 
@@ -165,7 +165,8 @@ def api(method, path, q, body):
         with _plock:
             p = get_project(body["id"])
             for k, v in body.items():
-                if k not in ("id", "rows", "runs", "created"):
+                # briefs are written by jobs; a window's stale copy must not overwrite them
+                if k not in ("id", "rows", "runs", "created", "brief", "persona_brief"):
                     p[k] = v
             save_project(p)
         return {"project": p}
@@ -405,6 +406,30 @@ def api(method, path, q, body):
             save_project(p)
             return {"brief": True, "cost_usd": p["brief"].get("cost_usd", 0)}
         return {"job": jobs.start("Reading the whole document", write_brief).id}
+    # response persona
+    if path == "/api/persona/meta":
+        p = get_project(body["id"]) if body.get("id") else None
+        return {**persona.ui_meta(), "style": persona.style_state(s),
+                "brief": persona.brief_state(p, s) if p else None,
+                "summary": persona.summary(p, s) if p else ""}
+    if path == "/api/style/learn":
+        return {"job": jobs.start("Learning your response style", persona.learn_style, s).id}
+    if path == "/api/persona/build":
+        p = get_project(body["id"])
+
+        def build(job=None):
+            r = persona.build_brief(p, config.load_settings(), job)
+            save_project(p)
+            return r
+        return {"job": jobs.start("Writing the persona brief", build).id}
+    if path == "/api/persona/edit":
+        with _plock:
+            p = get_project(body["id"])
+            b = p.setdefault("persona_brief", {})
+            b["text"], b["edited"] = body.get("text", ""), True
+            b.setdefault("hash", persona.inputs_hash(p, s))
+            save_project(p)
+        return {"brief": persona.brief_state(p, s)}
     if path == "/api/project/suggest-profile":
         p = get_project(body["id"])
         j = jobs.start("Reading the tender profile", reporting.suggest_profile, p, s)

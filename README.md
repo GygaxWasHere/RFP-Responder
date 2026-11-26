@@ -18,10 +18,34 @@ It reads the requirements from the customer's Excel compliance sheet or Word spe
 | 1 Requirements | An `.xlsx`/`.xlsm` compliance sheet: choose the sheet, the requirement / ID / section / customer-guidance columns, and the first and (optionally) last row to answer. Or a `.docx` specification, where the numbering comes from the headings: choose the heading to start at and the heading to stop before. |
 | 2 Sources | The knowledge areas this response may use (XProtect, BriefCam, Husky IVO, …), plus folders and websites that belong to this tender only. |
 | 3 Product & strategy | The product(s) to offer, product rules (e.g. "XProtect only, not BriefCam"), the sales team's win strategy, sales input files (mails, notes) and extra instructions. |
-| 4 Output | The Excel columns to fill. Compliance can be written as text, or as an X per level (Fully / Widely / …). Optionally a Word template with placeholders. You can also edit the compliance scale and the responsible parties (Milestone, Contractor, Customer, …) here. |
-| 5 Respond & review | Claude Code answers in batches. Open a row to see the quotes (verified or not), the links, why it is not fully compliant, the question to the customer and the product considered. **⤢** opens the reading pane: one requirement at a time, full size, with Previous/Next (Alt+←/→) through the current filter, e.g. all partly compliant rows. Click a column heading to sort: **Conf.** puts the answers Claude is least sure of first, and the reading pane follows that order. Edit and approve, then write Excel/Word and save the approved answers to the knowledge base. Edits are saved while you type. |
+| 4 Response persona | How the answers are written. **Standard**: your own style, learned from responses you are proud of. **Custom for this tender**: an audience equalizer over the five buying-committee roles, level of detail and tone, the customer's own web pages or annual report (their language), and the scoring criteria pasted from the RFP. See *Response persona* below. |
+| 5 Output | The Excel columns to fill. Compliance can be written as text, or as an X per level (Fully / Widely / …). Optionally a Word template with placeholders. You can also edit the compliance scale and the responsible parties (Milestone, Contractor, Customer, …) here. |
+| 6 Respond & review | Claude Code answers in batches. Open a row to see the quotes (verified or not), the links, why it is not fully compliant, the question to the customer and the product considered. **⤢** opens the reading pane: one requirement at a time, full size, with Previous/Next (Alt+←/→) through the current filter, e.g. all partly compliant rows. Click a column heading to sort: **Conf.** puts the answers Claude is least sure of first, and the reading pane follows that order. Edit and approve, then write Excel/Word and save the approved answers to the knowledge base. Edits are saved while you type. |
 
 Each answer states **which product** it considered, and which module or licence delivers the function.
+
+## Response persona
+
+The same facts read differently to a procurement officer, a security engineer and a consultant. Step 4 sets how the answers are written: tone, emphasis, vocabulary and level of detail. It never changes the compliance level, the confidence or what the evidence supports, and the writing rules (no restating, no superlatives) still apply.
+
+**My response style (per user).** Add responses you are proud of (Word, Excel, PDF) or paste single answers, and click **Learn my style**. Claude writes a style guide (tone and passion, sentence structure, openings, vocabulary, level of detail, how limitations are worded) and keeps a few typical excerpts as examples. The guide is stored in your settings on this computer. You can edit it, and it is used in every response you run.
+
+**Standard** uses your style guide, with the level of detail and tone learned from your examples, for a balanced evaluation panel. Without examples it is the Bid Desk standard.
+
+**Custom for this tender** adds:
+- **Audience**: one slider per buying-committee role, from *Not a reader* to *Primary*. The roles come from the Global Bid Desk review of 105 tenders (*XProtect buying committee in tenders*, Nov 2026):
+  - **Procurement** (process owner) wants complete, comparable answers, plain licensing and cost, and contract terms.
+  - The **requirement owner** (security, IT, police, loss prevention, facilities, OT) wants operational fit, integrations and migration.
+  - The **specifier** (consultant or engineer) wants measurable, standard-referenced answers and explicit equivalence.
+  - The **gatekeeper** (IT/cyber, legal, data protection) wants named controls, standards and evidence.
+  - The **approver** (board, council) wants the outcome, the risk and cost transparency.
+
+  Presets set the sliders for typical tenders: balanced, public procurement-led, consultant-led, technical panel, private enterprise and cyber gate. When the tender profile names a consultant, the app suggests *Consultant-led*.
+- **Level of detail** (concise / standard / detailed) and **tone** (neutral / confident / engaged).
+- **Mirror the customer**: links to their web pages or annual report (one page per link; for a PDF, the first 40 pages), or the files. Many sites refuse automated reading. If one does, save the page or PDF and add it as a file.
+- **How the response is scored**: the evaluation criteria pasted from the RFP. Format demands in them (e.g. "start each answer with Fulfilled") take precedence over the style.
+
+Claude combines all of this into a **persona brief** for the tender: how to write for this panel, how it is scored, format demands, the customer's own terms and their priorities. Every batch gets it. It is written when answering starts, and written again when the settings change. You can edit it, and an edited brief is kept. The length check after answering follows the chosen level of detail.
 
 ## Knowledge areas (shared on SharePoint)
 
@@ -96,7 +120,7 @@ For each batch of requirements (5 by default) the app does three things:
   - Refer to earlier answers ("see 4.2.1") instead of repeating them.
   - Vary the openings.
   - Write for the customer, never about the answer itself.
-  - Keep it short. Another party's scope gets one sentence ("Noted. This is in the contractor's scope.") and **Responsible = Contractor**, with no considerations. A simple compliant answer gets at most about 40 words, any other answer about 80. Detail for the bid team goes in *Gaps*.
+  - Keep it short. Another party's scope gets one sentence ("Noted. This is in the contractor's scope.") and **Responsible = Contractor**, with no considerations. A simple compliant answer gets at most about 40 words, any other answer about 80 (the response persona can make this concise, 25/50, or detailed, 60/130). Detail for the bid team goes in *Gaps*.
 - **Compliance vs. confidence.** Compliance says what the product does, and confidence says how sure Claude is. *Partially compliant* is only used when a specific part of the requirement is not met, or needs a third party, custom work or a workaround. Milestone modules and licences in the offer count as compliant. Missing evidence lowers the confidence instead of turning an answer partial. A compliant answer with confidence below 50 % is flagged **Needs review**, as is one without a verified quote.
 - **Consider.** Each answer can carry a short note: what the project should take into account and why it matters for the result. In Excel/Word it follows the answer as "Consider: …" or goes into its own column, and you can switch it off in step 4.
 - **After answering.** Answers that still repeat the requirement, open like several others, open with the product name or are longer than needed are flagged. Filter on **Style issues** and use **Answer checked again**.
@@ -166,6 +190,7 @@ responder/
   reporting.py           report views, Claude-written reports (Markdown + Word), tender profile suggestion
   osdep.py               Windows/macOS differences: data folder, dialogs, browser, Keychain/DPAPI, synced libraries
   engine.py              prompt, Claude Code call, quote + link verification
+  persona.py             response persona: learned user style, audience equalizer, customer mirroring, scoring brief
   writers.py             Excel write-back (text or X-marks), Word template fill
   jobs.py                background jobs with progress/cancel
   web/                   UI: Apollo design tokens, Svensk Tenn radar background

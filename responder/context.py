@@ -193,14 +193,19 @@ def style_check(row, project):
         if head and expl.lower().lstrip().startswith(head):
             flags.append("product_opening")
             break
-    if len(expl.split()) > (ACK_WORDS if _is_ack(row) else MAX_WORDS):
+    if len(expl.split()) > (ACK_WORDS if _is_ack(row) else max_words(project)):
         flags.append("long")
     row["style_flags"] = flags
     return flags
 
 
-MAX_WORDS = 100  # the prompt asks for at most ~80; flag clearly longer answers
 ACK_WORDS = 30   # acknowledged answers: a sentence or two
+
+
+def max_words(project):
+    """Flag answers clearly longer than the persona's limit (standard: ~80 asked, 100 flagged)."""
+    from . import persona
+    return round(persona.limits(project, config.load_settings())[1] * 1.25)
 
 
 def _is_ack(row):

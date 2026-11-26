@@ -15,7 +15,7 @@ import threading
 from . import osdep
 
 APP_NAME = "RFP Responder"
-APP_VERSION = "0.3.1"
+APP_VERSION = "0.4.0"
 
 BASE_DIR = os.path.realpath(osdep.data_dir())  # Windows: %LOCALAPPDATA%\RFPResponder; macOS: ~/Library/Application Support/RFPResponder
 SETTINGS_FILE = os.path.join(BASE_DIR, "settings.json")
@@ -44,6 +44,9 @@ DEFAULT_PARTIES = ["Milestone", "Contractor", "Customer", "Third party", "Milest
 DEFAULT_SETTINGS = {
     "user_name": "",
     "user_initials": "",
+    "style_files": [],      # responses the user is proud of (persona.py learns their style from them)
+    "style_snippets": [],   # pasted example answers
+    "style": {},            # the learned style guide: guide, detail, tone, excerpts, hash, at
     "kb_root": os.path.join(BASE_DIR, "knowledge"),   # shared folder with the knowledge areas
     "db_path": os.path.join(BASE_DIR, "knowledge.db"), # old single-file knowledge base (import only)
     "legacy_imported": False,
@@ -177,6 +180,9 @@ def new_project(name="New response"):
         "strategy": "",
         "strategy_files": [],
         "instructions": "",
+        "persona": {"mode": "standard", "preset": "balanced",   # see persona.py
+                    "audience": {"procurement": 2, "owner": 2, "specifier": 1, "gatekeeper": 1, "approver": 1},
+                    "detail": "standard", "tone": "neutral", "mirror_urls": [], "mirror_files": [], "scoring": ""},
         "output": {
             "excel": {"enabled": True, "path": "", "sheet": "", "overwrite": False,
                       "mode": "text", "compliance_col": "", "marks": {}, "mark_char": "X",
@@ -222,6 +228,10 @@ def load_project(pid):
         p["req_source"].setdefault(k, v)
     for k, v in base["profile"].items():
         p["profile"].setdefault(k, v)
+    for k, v in base["persona"].items():
+        p["persona"].setdefault(k, v)
+    for k, v in base["persona"]["audience"].items():
+        p["persona"]["audience"].setdefault(k, v)
     if not p.get("owner"):
         p["owner"] = load_settings().get("user_name", "")
     return p

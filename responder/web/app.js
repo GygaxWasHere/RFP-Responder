@@ -171,14 +171,16 @@ const STAGES = [
   { id: "requirements", n: 1, label: "Requirements" },
   { id: "sources", n: 2, label: "Sources" },
   { id: "strategy", n: 3, label: "Product & strategy" },
-  { id: "output", n: 4, label: "Output" },
-  { id: "respond", n: 5, label: "Respond & review" },
+  { id: "persona", n: 4, label: "Response persona" },
+  { id: "output", n: 5, label: "Output" },
+  { id: "respond", n: 6, label: "Respond & review" },
 ];
 function stageDone(id) {
   const p = S.project; if (!p) return false;
   if (id === "requirements") return p.rows.length > 0;
   if (id === "sources") return p.folders.length > 0 || p.websites.length > 0 || p.use_kb;
   if (id === "strategy") return p.products.length > 0;
+  if (id === "persona") return (p.persona?.mode || "standard") === "standard" || !!p.persona_brief?.text;
   if (id === "output") return (p.output.excel.enabled && (p.output.excel.compliance_col || Object.values(p.output.excel.marks || {}).some(Boolean))) || (p.output.word.enabled && p.output.word.template);
   if (id === "respond") return p.rows.length > 0 && p.rows.every(r => !r.selected || r.status === "approved");
   return false;
@@ -203,6 +205,7 @@ function render() {
   $("#main").innerHTML = `<div class="view">${v()}</div>`;
   if (S.tab === "kb") loadKbView();
   if (S.tab === "report") loadReport();
+  if (S.tab === "persona") loadPersonaMeta();
   clearTimeout(S._vt);
   S._vt = setTimeout(() => api("/api/view", { project: S.project?.id || "", tab: S.tab, open: [...S.open][0] || "" }).catch(() => {}), 800);
 }
@@ -244,6 +247,7 @@ VIEWS.projects = () => {
         <li><b>Requirements</b>: an Excel compliance sheet or a Word specification. Keep the customer's numbering.</li>
         <li><b>Sources</b>: the knowledge areas to use (XProtect, BriefCam, Husky IVO, …), plus folders that belong to this tender.</li>
         <li><b>Product &amp; strategy</b>: the product(s) to offer and the sales team's win strategy.</li>
+        <li><b>Response persona</b>: your own style, or answers aimed at the people who score this tender, in the customer's language.</li>
         <li><b>Output</b>: which Excel columns to fill, and/or a Word template.</li>
         <li><b>Respond &amp; review</b>: Claude Code answers each requirement and quotes its evidence. Every quote and link is checked automatically; you approve before anything is exported.</li>
       </ol>
@@ -360,9 +364,120 @@ VIEWS.strategy = () => {
       <div class="lbl">Sales input files (mails, notes, account plans)</div>${files}
       <button class="add" data-act="addStratFile"><span class="plus">+</span>Add sales input</button>
       <div class="msgbar info"><span>The strategy steers emphasis and wording. It never changes what the evidence supports.</span></div>
-      <div class="footer-actions"><span></span><button class="btn primary" data-act="tab" data-arg="output">Next: output →</button></div>`)}</div>
+      <div class="footer-actions"><span></span><button class="btn primary" data-act="tab" data-arg="persona">Next: response persona →</button></div>`)}</div>
     ${profilePane(p)}`;
 };
+
+// ------------------------------------------------------------------ response persona
+async function loadPersonaMeta() {
+  if (!S.project) return;
+  clearTimeout(saveTimer); await saveProject();  // the summary and brief state must see the latest choices
+  const d = await api("/api/persona/meta", { id: S.project.id }).catch(() => null);
+  if (!d) return;
+  S.pmeta = d;
+  if (S.tab === "persona") { const sc = $("#main").scrollTop; $("#main").innerHTML = `<div class="view">${VIEWS.persona()}</div>`; $("#main").scrollTop = sc; }
+}
+
+function radioCards(name, path, val, opts) {
+  return `<div class="rcards">${opts.map(([v, t, d]) => `<label class="rcard ${v === val ? "on" : ""}"><input type="radio" name="${name}" value="${esc(v)}" data-p="${path}" data-rerender="1" ${v === val ? "checked" : ""}><div><div class="t">${t}</div>${d ? `<div class="d">${d}</div>` : ""}</div></label>`).join("")}</div>`;
+}
+
+function myStylePane() {
+  const s = S.settings, st = s.style || {}, m = S.pmeta?.style || {};
+  const files = (s.style_files || []).map((f, i) => `<div class="lrow site" style="grid-template-columns:28px 1fr 32px"><img src="${ICON("document")}" alt=""><div class="path" title="${esc(f)}">&lrm;${esc(f)}</div><button class="iconbtn" title="Remove" data-act="rmStyleFile" data-arg="${i}">&#x2715;</button></div>`).join("");
+  const snips = (s.style_snippets || []).map((t, i) => `<div class="lrow site" style="grid-template-columns:28px 1fr 32px"><img src="${ICON("search-text")}" alt=""><div class="small" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(t)}">${esc(t)}</div><button class="iconbtn" title="Remove" data-act="rmSnippet" data-arg="${i}">&#x2715;</button></div>`).join("");
+  const status = !m.has_examples ? `<span class="tag y">No examples yet</span>` : !st.guide ? `<span class="tag y">Not learned yet</span>`
+    : m.stale ? `<span class="tag warn">Examples changed: learn again</span>` : `<span class="tag ok">Learned ${esc(st.at || "")}${st.edited ? " · edited" : ""}</span>`;
+  const D = S.pmeta?.detail || {}, T = S.pmeta?.tone || {};
+  return pane(`My response style <span class="muted small" style="font-weight:400">· ${esc(s.user_name || "set your name in Settings")}${s.user_initials ? " (" + esc(s.user_initials) + ")" : ""}</span>`, "star-up", `
+    <div class="hint">Responses you are proud of: their style, passion and level of detail. Claude learns your style once from them, and every response you run is written that way. Saved for you, on this computer; it applies to all your responses.</div>
+    <div class="lbl">Example responses (Word, Excel, PDF…)</div>${files || `<div class="hint">No files yet.</div>`}
+    <button class="add" data-act="addStyleFile"><span class="plus">+</span>Add responses</button>
+    <div class="lbl">Pasted answers</div>${snips}
+    <textarea class="input" id="snippet" style="min-height:60px" placeholder="Paste an answer you are proud of, then click Add answer"></textarea>
+    <div class="inline" style="justify-content:flex-end"><button class="btn secondary sm" data-act="addSnippet">Add answer</button></div>
+    <div class="footer-actions">${status}<button class="btn primary" data-act="learnStyle" ${m.has_examples ? "" : "disabled"}>${st.guide ? "Learn again" : "Learn my style"}</button></div>
+    ${st.guide ? `<div class="field"><label>Your style guide (edit freely)</label><textarea class="input" id="styleguide" style="min-height:180px">${esc(st.guide)}</textarea>
+      <div class="hint">Learned level of detail: <b>${esc(D[st.detail] || st.detail || "Standard")}</b> · tone: <b>${esc(T[st.tone] || st.tone || "Neutral")}</b>. These apply in Standard mode${(st.excerpts || []).length ? `; ${st.excerpts.length} typical excerpts are shown to Claude as examples` : ""}.</div></div>` : ""}`);
+}
+
+VIEWS.persona = () => {
+  const p = S.project, ps = p.persona || {}, M = S.pmeta;
+  if (!M) return `<div class="empty">Loading…</div>`;
+  const custom = ps.mode === "custom";
+  const mode = pane("Response persona", "checkmark-ok", `
+    ${hero("Who reads this response?", "The same facts can be written for a procurement officer, a security engineer or a consultant. Choose how the answers should sound and whom they should serve. The persona shapes tone, emphasis, vocabulary and detail; it never changes compliance or what the evidence supports.")}
+    ${radioCards("pmode", "persona.mode", ps.mode || "standard", [
+      ["standard", "Standard", "Your own style, learned from the responses you are proud of, for a balanced evaluation panel. Without examples: the Bid Desk standard."],
+      ["custom", "Custom for this tender", "Aim the answers at the people who score them: audience, detail and tone, the customer's own language, and the scoring criteria."]])}
+    <div class="hint">Now: <b>${esc(M.summary || "")}</b></div>
+    <div class="footer-actions"><span></span><button class="btn primary" data-act="tab" data-arg="output">Next: output →</button></div>`);
+  if (!custom) return `<div class="cols">${mode}${myStylePane()}</div>`;
+
+  const aud = ps.audience || {};
+  const presets = Object.entries(M.presets).map(([k, v]) => `<button class="chip ${ps.preset === k ? "on" : ""}" data-act="personaPreset" data-arg="${k}" title="${esc(v.hint)}">${esc(v.label)}</button>`).join("");
+  const eq = M.roles.map(r => {
+    const v = +(aud[r.key] ?? 0);
+    return `<div class="eqcol" title="Cares about: ${esc(r.cares)}">
+      <div class="eqlvl lv${v}" id="eqlvl-${r.key}">${esc(M.levels[v])}</div>
+      <input type="range" class="eqslider" min="0" max="3" step="1" value="${v}" data-aud="${r.key}">
+      <div class="eqname">${esc(r.name)}</div><div class="eqsub">${esc(r.title)}</div></div>`;
+  }).join("");
+  const cons = (p.profile || {}).consultant;
+  const consHint = cons && ps.preset !== "consultant" ? `<div class="msgbar info"><span>The tender profile names a consultant (${esc(cons)}). Consultant-led tenders are usually scored by the specifier: consider <a href="#" data-act="personaPreset" data-arg="consultant">Consultant-led</a>.</span></div>` : "";
+  const urls = (ps.mirror_urls || []).map((u, i) => `<div class="lrow site" style="grid-template-columns:28px 1fr 32px"><img src="${ICON("world")}" alt=""><input class="input sm" data-p="persona.mirror_urls.${i}" value="${esc(u)}" placeholder="https://www.customer.com/about  or a link to the annual report PDF"><button class="iconbtn" title="Remove" data-act="rmMirrorUrl" data-arg="${i}">&#x2715;</button></div>`).join("");
+  const mfiles = (ps.mirror_files || []).map((f, i) => `<div class="lrow site" style="grid-template-columns:28px 1fr 32px"><img src="${ICON("document")}" alt=""><div class="path" title="${esc(f)}">&lrm;${esc(f)}</div><button class="iconbtn" title="Remove" data-act="rmMirrorFile" data-arg="${i}">&#x2715;</button></div>`).join("");
+  const b = p.persona_brief || {}, bs = M.brief || {};
+  const bstat = !bs.exists ? `<span class="tag y">Not written yet: written automatically when you start answering</span>`
+    : bs.stale && bs.edited ? `<span class="tag warn">Settings changed since you edited it. Write it again to use them</span>`
+    : bs.stale ? `<span class="tag warn">Settings changed: rewritten when you start answering</span>`
+    : `<span class="tag ok">Written ${esc(b.at || "")}${bs.edited ? " · edited" : ""}${b.sources ? ` · ${b.sources} customer sources read` : ""}</span>`;
+
+  return `<div class="cols">${mode}${myStylePane()}</div>
+    <div class="cols" style="margin-top:20px">${pane("Audience", "list", `
+      <div class="hint">Who reads and scores the answers? Based on 105 tenders reviewed by the Global Bid Desk (Nov 2026): procurement runs the process, the requirement owner writes the content, consultants specify, IT/legal can veto, and a board awards. Start from a typical tender, then set the levels.</div>
+      <div class="chips">${presets}</div>
+      ${ps.preset && M.presets[ps.preset] ? `<div class="hint"><b>${esc(M.presets[ps.preset].label)}</b>: ${esc(M.presets[ps.preset].hint)}</div>` : `<div class="hint">Your own mix.</div>`}
+      <div class="eq">${eq}</div>
+      ${consHint}
+      <div class="row2"><div class="field"><label>Level of detail</label>${radioCards("pdetail", "persona.detail", ps.detail || "standard", Object.entries(M.detail).map(([k, l]) => [k, l, ""]))}</div>
+      <div class="field"><label>Tone</label>${radioCards("ptone", "persona.tone", ps.tone || "neutral", Object.entries(M.tone).map(([k, l]) => [k, l, ""]))}</div></div>`)}
+    ${pane("Mirror the customer", "world", `
+      <div class="hint">The customer's own web pages, annual report or strategy: Claude picks up their words (passengers or visitors, sites or facilities, residents or citizens) and what concerns them, so the answers speak their language. One page per link is read; a PDF link reads the first 40 pages.</div>
+      <div class="lbl">Web pages and online reports</div>${urls || `<div class="hint">No links yet.</div>`}
+      <button class="add" data-act="addMirrorUrl"><span class="plus">+</span>Add link</button>
+      <div class="lbl">Files (annual report, strategy, press releases)</div>${mfiles || `<div class="hint">No files yet.</div>`}
+      <button class="add" data-act="addMirrorFile"><span class="plus">+</span>Add file</button>`)}</div>
+    <div class="cols" style="margin-top:20px">${pane("How the response is scored", "search-text", `
+      <div class="hint">Paste the evaluation criteria from the RFP: weights, scoring scale, pass/fail criteria, what the evaluators look for, and any rules on how answers must be written.</div>
+      <textarea class="input" style="min-height:220px" data-p="persona.scoring" placeholder="e.g. Technical quality 40 %: scored 0-5 per requirement. 5 = fully meets the requirement with a clear description of how … Answers must start with 'Comply', 'Partially comply' or 'Not comply'.">${esc(ps.scoring || "")}</textarea>`)}
+    ${pane("Persona brief", "book", `
+      <div class="hint">Claude combines the audience, the customer's material and the scoring criteria into a short brief that every batch of answers gets. You can edit it; an edited brief is kept as it is.</div>
+      ${(b.failed || []).length ? `<div class="msgbar warning"><span>Could not be read: ${b.failed.map(esc).join(", ")}. Many sites refuse automated reading: open the page or report in your browser, save it (or the PDF), and add it under Files.</span></div>` : ""}
+      <div class="footer-actions">${bstat}<button class="btn primary" data-act="personaBuild">${bs.exists ? "Write it again" : "Write it now"}</button></div>
+      <textarea class="input" id="pbrief" style="min-height:260px" placeholder="Not written yet.">${esc(b.text || "")}</textarea>`)}</div>`;
+};
+
+// equalizer sliders: update the level in place, save after a pause
+document.addEventListener("input", e => {
+  const el = e.target;
+  if (el.dataset.aud && S.project) {
+    const ps = S.project.persona, v = +el.value;
+    ps.audience[el.dataset.aud] = v; ps.preset = "";
+    const lv = $("#eqlvl-" + el.dataset.aud);
+    if (lv) { lv.textContent = S.pmeta.levels[v]; lv.className = "eqlvl lv" + v; }
+    document.querySelectorAll("[data-act=personaPreset]").forEach(c => c.classList.remove("on"));
+    scheduleSave();
+  }
+  if (el.id === "pbrief" && S.project) {
+    clearTimeout(S._pb);
+    S._pb = setTimeout(() => safe(async () => { const d = await api("/api/persona/edit", { id: S.project.id, text: el.value }); S.project.persona_brief = { ...(S.project.persona_brief || {}), text: el.value, edited: true }; if (S.pmeta) S.pmeta.brief = d.brief; }), 800);
+  }
+  if (el.id === "styleguide" && S.settings) {
+    S.settings.style = { ...(S.settings.style || {}), guide: el.value, edited: true };
+    clearTimeout(S._st); S._st = setTimeout(() => safe(() => api("/api/settings", { style: S.settings.style })), 800);
+  }
+});
 
 function profilePane(p) {
   const pr = p.profile || {}, M = S.reportMeta || {};
@@ -516,6 +631,7 @@ VIEWS.respond = () => {
         <button class="btn secondary" data-act="run" data-arg="checked">Answer checked again</button>
         <select class="input" style="width:150px" data-s="model">${["opus", "sonnet", "haiku"].map(m => `<option ${S.settings.model === m ? "selected" : ""}>${m}</option>`).join("")}</select>
         <span class="grow"></span>
+        <button class="btn tertiary" data-act="tab" data-arg="persona" title="Style and audience the answers are written for">Persona: ${esc((p.persona?.mode || "standard") === "custom" ? "custom" : "standard")}</button>
         <button class="btn tertiary" data-act="showBrief" title="What Claude understood about the whole document before answering">Tender brief</button>
         <button class="btn tertiary" data-act="approveChecked">Approve checked</button>
         <button class="btn secondary" data-act="exportExcel" ${p.output.excel.enabled ? "" : "disabled"}><img src="${ICON("download")}" width="16" alt="">Write Excel</button>
@@ -1093,6 +1209,50 @@ const ACT = {
     const d = await safe(() => api("/api/project/brief", { id: S.project.id })); if (!d) return;
     const j = await watchJob(d.job); await reloadProject(); if (j && j.status === "done") ACT.showBrief();
   },
+  // response persona
+  personaPreset: async k => {
+    const pr = S.pmeta?.presets?.[k]; if (!pr) return;
+    Object.assign(S.project.persona, { preset: k, audience: { ...pr.audience } });
+    await saveProject(); render();
+  },
+  addMirrorUrl: async () => { S.project.persona.mirror_urls.push(""); await saveProject(); render(); },
+  rmMirrorUrl: async i => { S.project.persona.mirror_urls.splice(+i, 1); await saveProject(); render(); },
+  addMirrorFile: async () => {
+    const ps = await safe(() => browse("files", "any", "Customer material (annual report, strategy)"));
+    if (ps && ps.length) { const P = S.project.persona; P.mirror_files = [...new Set([...(P.mirror_files || []), ...ps])]; await saveProject(); render(); }
+  },
+  rmMirrorFile: async i => { S.project.persona.mirror_files.splice(+i, 1); await saveProject(); render(); },
+  personaBuild: async () => {
+    await saveProject();
+    const d = await safe(() => api("/api/persona/build", { id: S.project.id })); if (!d) return;
+    const j = await watchJob(d.job);
+    await reloadProject();
+    if (j && j.status === "done") msg("Persona brief written. Read it through and adjust it if needed.", "success");
+  },
+  addStyleFile: async () => {
+    const ps = await safe(() => browse("files", "any", "Responses you are proud of")); if (!ps || !ps.length) return;
+    S.settings.style_files = [...new Set([...(S.settings.style_files || []), ...ps])];
+    await safe(() => api("/api/settings", { style_files: S.settings.style_files })); render();
+  },
+  rmStyleFile: async i => {
+    S.settings.style_files.splice(+i, 1);
+    await safe(() => api("/api/settings", { style_files: S.settings.style_files })); render();
+  },
+  addSnippet: async () => {
+    const t = $("#snippet").value.trim(); if (!t) return;
+    S.settings.style_snippets = [...(S.settings.style_snippets || []), t];
+    await safe(() => api("/api/settings", { style_snippets: S.settings.style_snippets })); render();
+  },
+  rmSnippet: async i => {
+    S.settings.style_snippets.splice(+i, 1);
+    await safe(() => api("/api/settings", { style_snippets: S.settings.style_snippets })); render();
+  },
+  learnStyle: async () => {
+    const d = await safe(() => api("/api/style/learn")); if (!d) return;
+    const j = await watchJob(d.job);
+    await refreshState(); render();
+    if (j && j.status === "done") msg("Your style is learned. Read the guide and adjust it if needed.", "success");
+  },
   cancelJob: id => safe(() => api("/api/job/cancel", { id })),
   toggleLog: () => $("#job .log")?.classList.toggle("hidden"),
 };
@@ -1104,18 +1264,19 @@ function showReport(title, md, docx) {
 
 // ------------------------------------------------------------------ help (F1)
 const HELP_FOR_TAB = { projects: "start", requirements: "requirements", sources: "sources", strategy: "strategy",
-  output: "output", respond: "review", kb: "areas", report: "reporting", settings: "settings" };
+  persona: "persona", output: "output", respond: "review", kb: "areas", report: "reporting", settings: "settings" };
 const HELP = [
   ["start", "Getting started", `
     <p><b>RFP Responder</b> answers tender requirements the way the Global Bid Desk does: from evidence, for the product you offer, in the customer's own numbering. Every claim is checked against its source before anyone approves it.</p>
     <h4>First time</h4>
     <ol><li>Open <a href="#" data-act="helpTopic" data-arg="settings">Settings</a>. Add your name and initials, and click <b>Test</b> next to Claude Code.</li>
       <li>Under <b>Shared knowledge folder</b>, choose the RFP Responder folder in the synced Global Bid Desk SharePoint library, so you share knowledge areas, earlier answers and reports with the team.</li>
-      <li>Click <b>Start</b> on the Responses page, then work through steps 1 to 5 in the bar at the top.</li></ol>
-    <h4>The five steps</h4>
+      <li>Click <b>Start</b> on the Responses page, then work through steps 1 to 6 in the bar at the top.</li></ol>
+    <h4>The six steps</h4>
     <ol><li><a href="#" data-act="helpTopic" data-arg="requirements">Requirements</a>: the customer's Excel sheet or Word specification, and which part of it to answer.</li>
       <li><a href="#" data-act="helpTopic" data-arg="sources">Sources</a>: the knowledge areas to use, plus material for this tender only.</li>
       <li><a href="#" data-act="helpTopic" data-arg="strategy">Product &amp; strategy</a>: what you offer, rules, the win strategy and the tender profile.</li>
+      <li><a href="#" data-act="helpTopic" data-arg="persona">Response persona</a>: your own style, or answers aimed at the people who score this tender.</li>
       <li><a href="#" data-act="helpTopic" data-arg="output">Output</a>: the Excel columns to fill and/or a Word template.</li>
       <li><a href="#" data-act="helpTopic" data-arg="review">Respond &amp; review</a>: Claude answers. You check, edit and approve, then write the files.</li></ol>
     <div class="msgbar info"><span>Answers can become legally binding. Nothing is marked compliant unless a quote from your sources supports it, and answers without verified evidence are flagged <b>Needs review</b>.</span></div>`],
@@ -1144,7 +1305,27 @@ const HELP = [
     <h4>Tender profile (for reporting)</h4>
     <p>Vertical, country and region, end customer type, consultant or evaluator, partner, deadline, outcome, why the customer runs the tender, what concerns them, and key themes. Product management, security and marketing use it on the <a href="#" data-act="helpTopic" data-arg="reporting">Reporting</a> tab. <b>Suggest with Claude</b> fills it in from the requirements: check the result, as fields the text does not support are left empty.</p>
     <p>Turn off <b>Share in the requirements register</b> for a confidential tender. Nothing from it is then shared for reporting.</p>`],
-  ["output", "4 · Output", `
+  ["persona", "4 · Response persona", `
+    <p>The same facts can be written for a procurement officer, a security engineer or a consultant. The persona sets tone, emphasis, vocabulary and level of detail. It never changes the compliance level, the confidence or what the evidence supports.</p>
+    <h4>My response style (for all your responses)</h4>
+    <ul><li>Add responses you are proud of (Word, Excel, PDF) or paste single answers, then click <b>Learn my style</b>. Claude describes your tone, structure, vocabulary and level of detail in a style guide, and keeps a few typical excerpts as examples. Edit the guide freely.</li>
+      <li>It is saved for you on this computer and used in every response you run. Add new examples and click <b>Learn again</b> when your style develops.</li></ul>
+    <h4>Standard or custom</h4>
+    <ul><li><b>Standard</b>: your style guide, with the level of detail and tone learned from your examples, for a balanced evaluation panel. Without examples, the Bid Desk standard (short, neutral answers).</li>
+      <li><b>Custom for this tender</b>: aim the answers at the people who score them.</li></ul>
+    <h4>Custom: audience</h4>
+    <p>Five roles appear in tenders (Global Bid Desk review of 105 tenders, Nov 2026). Set how much each one matters with the sliders, or start from a typical tender:</p>
+    <ul><li><b>Procurement</b> (process owner): complete, comparable answers, licensing and total cost, contract terms. A filter to pass.</li>
+      <li><b>Requirement owner</b> (security, IT, police, loss prevention, facilities, OT): operational fit, integrations, migration.</li>
+      <li><b>Specifier</b> (consultant / engineer): precise, measurable, standard-referenced; equivalence to named products.</li>
+      <li><b>Gatekeeper</b> (IT/cyber, legal, data protection): controls, standards, evidence. Can eliminate a bid regardless of score.</li>
+      <li><b>Approver</b> (board, council): outcome, risk, cost transparency.</li></ul>
+    <p><b>Primary</b> readers are served first. When their needs conflict, the primary reader wins. <b>Level of detail</b> sets the answer length (concise about 25/50 words, standard 40/80, detailed 60/130), and <b>Tone</b> runs from neutral to engaged. Every benefit must still follow from the evidence.</p>
+    <h4>Custom: mirror the customer and the scoring</h4>
+    <ul><li><b>Mirror the customer</b>: links to their web pages or annual report, or the files. Claude picks up their own words and priorities.</li>
+      <li><b>How the response is scored</b>: paste the evaluation criteria from the RFP. Format demands in them (e.g. "start each answer with Comply") take precedence over the style.</li>
+      <li>Claude combines all of this into a <b>persona brief</b> that every batch gets. It is written when you start answering, or with <b>Write it now</b>. You can edit it, and an edited brief is kept as it is.</li></ul>`],
+  ["output", "5 · Output", `
     <h4>Excel</h4>
     <ul><li>Answers go into the customer's workbook, saved as a new file. The original is never changed.</li>
       <li>Compliance as <b>text in one column</b> (label or code), or as <b>a mark per level</b> (e.g. an X under Fully / Widely / Not supported).</li>
@@ -1154,7 +1335,7 @@ const HELP = [
     <p>Fill a template with placeholders such as <code>{{project}}</code> and <code>{{customer}}</code>, and one table row with <code>{{id}}</code>, <code>{{requirement}}</code>, <code>{{compliance_label}}</code>, <code>{{explanation}}</code> and so on, repeated per requirement. A template without such a row gets a compliance table at the end.</p>
     <h4>Compliance levels</h4>
     <p>Shared by all responses. Match them to the customer's scale if needed. The meaning text tells Claude when to use each level.</p>`],
-  ["review", "5 · Respond & review", `
+  ["review", "6 · Respond & review", `
     <ul><li><b>Answer unanswered</b> sends the selected rows to Claude in batches. <b>Answer checked again</b> re-answers ticked rows. Choose the model next to the button.</li>
       <li>Filter with the chips: unanswered, needs review, draft, approved, or a compliance level.</li>
       <li>Open a row with <b>&#9662;</b> to see the quotes (verified or not), the links, why it is not fully compliant, the question to the customer and the product considered.</li>
@@ -1191,7 +1372,7 @@ const HELP = [
       <li><b>Build report with Claude</b>: optionally ask a question, e.g. "Which missing capabilities cost us most in airport tenders?" Claude reads only the filtered data and writes a report with counts and examples, keeping facts apart from interpretation. It is saved as Word and Markdown in the shared folder's reports folder, where colleagues find it under <b>Reports</b>. Check the figures before you share them outside Milestone.</li></ul>
     <p class="muted small">Responses are published to the register about once a minute after changes. <b>Refresh</b> reads the latest.</p>`],
   ["settings", "Settings", `
-    <ul><li><b>Your name and initials</b>: these go into the responses and show who approved what.</li>
+    <ul><li><b>Your name and initials</b>: these go into the responses and show who approved what. Your <a href="#" data-act="helpTopic" data-arg="persona">response style</a> is set on the Response persona step.</li>
       <li><b>Shared knowledge folder</b>: the team's folder in the synced SharePoint library. The list of <b>SharePoint libraries synced to this computer</b> shows which libraries the app found. Files in them are stored by library name, so sources work on Windows and Mac alike. Add a folder under <b>Extra library folders</b> if one is missing.</li>
       <li><b>My reporting focus</b>: the view the Reporting tab opens on.</li>
       <li><b>Strict evidence</b>, and the number of passages and earlier answers given to Claude per requirement.</li>
